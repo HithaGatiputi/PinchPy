@@ -3,8 +3,8 @@
 **PinchPy** is a Python library for Pinch Analysis, thermal process integration, and Heat Exchanger Network (HEN) synthesis.
 
 > [!NOTE]
-> **Current Status: Phase 1 — Process Stream Data Model + Validation.**
-> Future modules (heat cascade, utility targeting, composite curves, HEN synthesis, and ANN approximation) are currently planned future work and have not yet been released.
+> **Current Status: Phases 1–3 complete — Stream model + validation, ΔTmin temperature shifting/intervals, and the heat cascade / pinch-point / utility-targeting engine.**
+> Composite curve data generation (`analysis.composite_curves`) is also implemented. Plotting, HEN synthesis, and ANN approximation are planned future work and have not yet been released.
 
 ---
 
@@ -108,7 +108,64 @@ python examples/stream_example.py
 
 ---
 
-## 6. How to Run Tests
+## 6. ΔTmin Temperature Shifting & Intervals
+
+Before streams can be compared on a single scale, every hot stream is shifted down by $\Delta T_{min}/2$ and every cold stream is shifted up by $\Delta T_{min}/2$. This guarantees that any heat transfer feasible on the shifted scale respects the minimum approach temperature on the real scale.
+
+```python
+from pinchpy.analysis.temperature_intervals import shifted_temperatures, build_intervals
+
+temps = shifted_temperatures([hot, cold], delta_t_min=10)
+# -> sorted, de-duplicated shifted breakpoints, highest to lowest
+
+intervals = build_intervals([hot, cold], delta_t_min=10)
+# -> contiguous (high, low) temperature bands between those breakpoints
+```
+
+`delta_t_min` must be strictly positive; non-positive values raise `ValueError`. An empty stream list returns an empty list rather than raising.
+
+---
+
+## 7. Heat Cascade & Pinch-Point Targeting
+
+The heat cascade (Problem Table Algorithm) walks the shifted intervals from the highest temperature down, accumulating the net heat surplus/deficit of the streams active in each interval. Shifting that running total so its lowest point is exactly zero gives the **minimum hot utility**; the cascade's final value is then the **minimum cold utility**. The shifted temperature(s) where the cascade touches zero are the **pinch point(s)**.
+
+```python
+from pinchpy.models.stream import Stream
+from pinchpy.analysis.pinch_point import utility_targets
+
+hot = Stream("H1", "hot", 180, 80, 2.0)
+cold = Stream("C1", "cold", 20, 150, 1.5)
+
+result = utility_targets([hot, cold], delta_t_min=10)
+print(result)
+# {
+#   "minimum_hot_utility": 0.0,
+#   "minimum_cold_utility": 5.0,
+#   "pinch_shifted_temperature": 185.0,
+#   "pinch_hot_temperature": 190.0,
+#   "pinch_cold_temperature": 180.0,
+#   "pinch_shifted_temperatures": [185.0],
+#   "is_threshold_problem": True,
+# }
+```
+
+- `pinch_shifted_temperatures` lists **every** shifted temperature at which the cascade reaches zero (a problem can have more than one pinch).
+- `is_threshold_problem` is `True` when one utility target is already zero — the reported "pinch" then sits at the extreme end of the temperature range rather than at an interior constraint, which is expected behaviour for threshold problems rather than an error.
+- Passing an empty stream list returns zero utilities and `None` for the pinch temperature fields instead of raising.
+
+Composite-curve point data (for later plotting) is available via:
+
+```python
+from pinchpy.analysis.composite_curves import composite_curve_data
+
+curves = composite_curve_data([hot, cold], delta_t_min=10)
+# {"hot_curve": [...], "cold_curve": [...]}  # cumulative-enthalpy vs. temperature points
+```
+
+---
+
+## 8. How to Run Tests
 
 Install the package in editable mode and run the test suite with `pytest`:
 
@@ -119,13 +176,14 @@ pytest -v
 
 ---
 
-## 7. Planned Future Phases (Upcoming)
+## 9. Project Phases
 
-The following capabilities are planned for subsequent phases and will build on top of the Phase 1 Stream model:
-
-- **Phase 2**: $\Delta T_{min}$ temperature shifting and interval formation
-- **Phase 3**: Heat cascade & Problem Table Algorithm
-- **Phase 4**: Pinch temperature & minimum utility targeting ($Q_{H,min}$, $Q_{C,min}$)
-- **Phase 5**: Composite Curves (CC) and Grand Composite Curve (GCC)
-- **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
-- **Phase 7**: Surrogate modelling & ANN prediction
+- ✅ **Phase 1**: Process stream data model + validation
+- ✅ **Phase 2**: $\Delta T_{min}$ temperature shifting and interval formation
+- ✅ **Phase 3**: Heat cascade (Problem Table Algorithm), pinch-point identification & minimum utility targeting ($Q_{H,min}$, $Q_{C,min}$), composite-curve data generation
+- ⏳ **Phase 4**: Composite Curve / Grand Composite Curve plotting
+- ⏳ **Phase 5**: Heat-exchanger duty/LMTD/area calculations wired into composite curves
+- ⏳ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
+- ⏳ **Phase 7**: Synthetic dataset generation from the pinch engine
+- ⏳ **Phase 8**: ANN (MLP) surrogate model training & evaluation
+- ⏳ **Phase 9**: Integration + UI/CLI

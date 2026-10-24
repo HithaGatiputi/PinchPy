@@ -3,8 +3,8 @@
 **PinchPy** is a Python library for Pinch Analysis, thermal process integration, and Heat Exchanger Network (HEN) synthesis.
 
 > [!NOTE]
-> **Current Status: Phases 1–3 complete — Stream model + validation, ΔTmin temperature shifting/intervals, and the heat cascade / pinch-point / utility-targeting engine.**
-> Composite curve data generation (`analysis.composite_curves`) is also implemented. Plotting, HEN synthesis, and ANN approximation are planned future work and have not yet been released.
+> **Current Status: Phases 1–4 complete — Stream model + validation, ΔTmin temperature shifting/intervals, the heat cascade / pinch-point / utility-targeting engine, and Composite Curve / Grand Composite Curve plotting.**
+> Composite curve data generation (`analysis.composite_curves`) is also implemented. HEN synthesis and ANN approximation are planned future work and have not yet been released.
 
 ---
 
@@ -173,7 +173,12 @@ Install the package in editable mode and run the test suite with `pytest`:
 pip install -e .
 pytest -v
 ```
+To see the Phase 4 plots (opens four plot windows and saves PNGs to `data/processed/`):
 
+```bash
+```markdown
+python examples/phase4_plots_example.py
+```
 ---
 
 ## 9. Project Phases
@@ -181,7 +186,7 @@ pytest -v
 - ✅ **Phase 1**: Process stream data model + validation
 - ✅ **Phase 2**: $\Delta T_{min}$ temperature shifting and interval formation
 - ✅ **Phase 3**: Heat cascade (Problem Table Algorithm), pinch-point identification & minimum utility targeting ($Q_{H,min}$, $Q_{C,min}$), composite-curve data generation
-- ⏳ **Phase 4**: Composite Curve / Grand Composite Curve plotting
+- ✅ **Phase 4**: Composite Curve / Grand Composite Curve plotting
 - ⏳ **Phase 5**: Heat-exchanger duty/LMTD/area calculations wired into composite curves
 - ⏳ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
 - ⏳ **Phase 7**: Synthetic dataset generation from the pinch engine

@@ -3,7 +3,7 @@
 **PinchPy** is a Python library for Pinch Analysis, thermal process integration, and Heat Exchanger Network (HEN) synthesis.
 
 > [!NOTE]
-> **Current Status: Phases 1–4 complete — Stream model + validation, ΔTmin temperature shifting/intervals, the heat cascade / pinch-point / utility-targeting engine, and Composite Curve / Grand Composite Curve plotting.**
+> **Current Status: Phases 1–5 complete — Stream model + validation, ΔTmin temperature shifting/intervals, the heat cascade / pinch-point / utility-targeting engine, Composite Curve / Grand Composite Curve plotting, and composite-curve area targeting.**
 > Composite curve data generation (`analysis.composite_curves`) is also implemented. HEN synthesis and ANN approximation are planned future work and have not yet been released.
 
 ---
@@ -165,7 +165,26 @@ curves = composite_curve_data([hot, cold], delta_t_min=10)
 
 ---
 
-## 8. How to Run Tests
+## 8. Area Targeting (Phase 5)
+
+The composite curves are cut into vertical enthalpy strips in which both curves are straight lines. Each strip is treated as one counter-current exchanger: its LMTD comes from the hot and cold temperature gaps at its two ends, its area is `Q / (U · LMTD)`, and the strip areas add up to the minimum area target for the chosen ΔTmin (uniform overall coefficient `U`, in kW/(m²·°C)).
+
+```python
+from pinchpy.models.stream import Stream
+from pinchpy.analysis.area_target import area_target
+
+streams = [Stream("H1", "hot", 180, 80, 2.0), Stream("C1", "cold", 20, 150, 1.5)]
+result = area_target(streams, delta_t_min=10, overall_heat_transfer_coefficient=0.1)
+print(result["total_area"])   # about 44.0 (m²)
+```
+
+- Returns `total_area`, per-strip `strips` (with `lmtd` and `area`), `heat_recovery`, `minimum_approach` and `is_threshold_problem`.
+- Empty input gives zero area; a non-positive `delta_t_min` or `U` raises `ValueError`.
+- If the composite curves cross or touch, the area is undefined and `ValueError` is raised; a `RuntimeWarning` is issued if they come closer than ΔTmin. Both mean the utility targets feeding the curves are inconsistent with ΔTmin.
+
+---
+
+## 9. How to Run Tests
 
 Install the package in editable mode and run the test suite with `pytest`:
 
@@ -173,21 +192,28 @@ Install the package in editable mode and run the test suite with `pytest`:
 pip install -e .
 pytest -v
 ```
+
 To see the Phase 4 plots (opens four plot windows and saves PNGs to `data/processed/`):
 
 ```bash
-```markdown
 python examples/phase4_plots_example.py
 ```
+
+To print the Phase 5 area targets:
+
+```bash
+python examples/phase5_area_target_example.py
+```
+
 ---
 
-## 9. Project Phases
+## 10. Project Phases
 
 - ✅ **Phase 1**: Process stream data model + validation
 - ✅ **Phase 2**: $\Delta T_{min}$ temperature shifting and interval formation
 - ✅ **Phase 3**: Heat cascade (Problem Table Algorithm), pinch-point identification & minimum utility targeting ($Q_{H,min}$, $Q_{C,min}$), composite-curve data generation
 - ✅ **Phase 4**: Composite Curve / Grand Composite Curve plotting
-- ⏳ **Phase 5**: Heat-exchanger duty/LMTD/area calculations wired into composite curves
+- ✅ **Phase 5**: Heat-exchanger duty/LMTD/area calculations wired into composite curves
 - ⏳ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
 - ⏳ **Phase 7**: Synthetic dataset generation from the pinch engine
 - ⏳ **Phase 8**: ANN (MLP) surrogate model training & evaluation

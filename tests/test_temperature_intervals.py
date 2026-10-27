@@ -13,7 +13,7 @@ def _streams():
 
 def test_shifted_temperatures_applies_half_delta_t_min():
     temps = shifted_temperatures(_streams(), 10)
-    assert temps == [185.0, 145.0, 85.0, 15.0]
+    assert temps == [175.0, 155.0, 75.0, 25.0]
 
 
 def test_shifted_temperatures_sorted_descending_and_deduplicated():
@@ -68,21 +68,21 @@ def test_build_intervals_empty_streams_returns_empty_list():
 def test_shifted_temperatures_single_stream_gives_two_endpoints():
     streams = [Stream("H1", "hot", 180, 80, 2.0)]
     temps = shifted_temperatures(streams, 10)
-    assert temps == [185.0, 85.0]
+    assert temps == [175.0, 75.0]
 
     intervals = build_intervals(streams, 10)
-    assert intervals == [(185.0, 85.0)]
+    assert intervals == [(175.0, 75.0)]
 
 
 def test_shifted_temperatures_hot_and_cold_collision_deduplicates():
-    # Hot stream supply shifted down by 5 (180 + 5 = 185) lands on the same
-    # shifted temperature as a cold stream target shifted up by 5 (190 - 5 = 185).
+    # Hot stream supply shifted down by 5 (180 - 5 = 175) lands on the same
+    # shifted temperature as a cold stream target shifted up by 5 (170 + 5 = 175).
     streams = [
         Stream("H1", "hot", 180, 80, 2.0),
-        Stream("C1", "cold", 170, 190, 1.5),
+        Stream("C1", "cold", 150, 170, 1.5),
     ]
     temps = shifted_temperatures(streams, 10)
     assert temps == sorted(set(temps), reverse=True)
-    assert 185.0 in temps
-    assert temps.count(185.0) == 1
-    assert temps == [185.0, 165.0, 85.0]
+    assert 175.0 in temps
+    assert temps.count(175.0) == 1
+    assert temps == [175.0, 155.0, 75.0]

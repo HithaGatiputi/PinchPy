@@ -1,5 +1,5 @@
 def _segments(streams, delta_t_min):
-    from .temperature_intervals import shifted_temperatures
+    from .temperature_intervals import shifted_endpoints, shifted_temperatures
 
     temps = shifted_temperatures(streams, delta_t_min)
     segments = []
@@ -7,9 +7,7 @@ def _segments(streams, delta_t_min):
         d_t = high_t - low_t
         net_cph = 0.0
         for s in streams:
-            shift = delta_t_min / 2 if s.stream_type == "hot" else -delta_t_min / 2
-            ts = s.supply_temperature + shift
-            tt = s.target_temperature + shift
+            ts, tt = shifted_endpoints(s, delta_t_min)
             upper, lower = max(ts, tt), min(ts, tt)
             if upper >= high_t and lower <= low_t:
                 net_cph += s.heat_capacity_flow
@@ -18,8 +16,10 @@ def _segments(streams, delta_t_min):
 
 
 def _curve(streams, stream_type, delta_t_min):
+    from .temperature_intervals import stream_shift
+
     segments = _segments([s for s in streams if s.stream_type == stream_type], delta_t_min)
-    shift = delta_t_min / 2 if stream_type == "hot" else -delta_t_min / 2
+    shift = stream_shift(stream_type, delta_t_min)
 
     enthalpy = 0.0
     points = [(0.0, segments[-1][1] - shift if segments else 0.0)]

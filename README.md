@@ -142,10 +142,10 @@ print(result)
 # {
 #   "minimum_hot_utility": 0.0,
 #   "minimum_cold_utility": 5.0,
-#   "pinch_shifted_temperature": 185.0,
-#   "pinch_hot_temperature": 190.0,
-#   "pinch_cold_temperature": 180.0,
-#   "pinch_shifted_temperatures": [185.0],
+#   "pinch_shifted_temperature": 175.0,
+#   "pinch_hot_temperature": 180.0,
+#   "pinch_cold_temperature": 170.0,
+#   "pinch_shifted_temperatures": [175.0],
 #   "is_threshold_problem": True,
 # }
 ```

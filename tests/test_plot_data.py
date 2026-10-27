@@ -181,15 +181,6 @@ def test_invalid_delta_t_min_raises_value_error(make_streams, bad_delta_t_min):
         grand_composite_curve_data(make_streams(), bad_delta_t_min)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Phase 2/3 shift hot streams up and cold streams down by ΔTmin/2 (standard "
-        "pinch analysis does the opposite), so the cold-utility target used to place "
-        "the cold curve is too small and the curves come closer than ΔTmin. This "
-        "should start passing once the shift direction is corrected upstream."
-    ),
-    strict=False,
-)
 def test_composite_curves_keep_delta_t_min_at_closest_approach():
     data = composite_curve_plot_data(_four_streams(), 10)
     assert data["minimum_approach"] == pytest.approx(10.0, abs=1e-6)

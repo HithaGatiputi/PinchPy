@@ -16,7 +16,7 @@ def interval_heat_balance(streams, high_t, low_t, delta_t_min):
     d_t = high_t - low_t
     net_cph = 0.0
     for s in streams:
-        shift = delta_t_min / 2 if s.type == "hot" else -delta_t_min / 2
+        shift = -delta_t_min / 2 if s.type == "hot" else delta_t_min / 2
         ts = s.supply_temperature + shift
         tt = s.target_temperature + shift
         upper, lower = max(ts, tt), min(ts, tt)

@@ -16,8 +16,8 @@ def _validate_delta_t_min(delta_t_min):
 
 def shifted_temperatures(streams, delta_t_min):
     _validate_delta_t_min(delta_t_min)
-    hot_shift = delta_t_min / 2
-    cold_shift = -delta_t_min / 2
+    hot_shift = -delta_t_min / 2
+    cold_shift = delta_t_min / 2
     temperatures = []
     for s in streams:
         shift = hot_shift if s.type == "hot" else cold_shift

@@ -13,12 +13,12 @@ the minimum cold utility.
 
 
 def interval_heat_balance(streams, high_t, low_t, delta_t_min):
+    from .temperature_intervals import shifted_endpoints
+
     d_t = high_t - low_t
     net_cph = 0.0
     for s in streams:
-        shift = -delta_t_min / 2 if s.type == "hot" else delta_t_min / 2
-        ts = s.supply_temperature + shift
-        tt = s.target_temperature + shift
+        ts, tt = shifted_endpoints(s, delta_t_min)
         upper, lower = max(ts, tt), min(ts, tt)
         if upper >= high_t and lower <= low_t:
             net_cph += s.cp if s.type == "hot" else -s.cp

@@ -14,14 +14,29 @@ def _validate_delta_t_min(delta_t_min):
         raise ValueError("delta_t_min must be greater than zero.")
 
 
+def stream_shift(stream_type, delta_t_min):
+    """Return the shifted-temperature-scale offset for a given stream type.
+
+    Hot streams are shifted down and cold streams are shifted up by half of
+    ``delta_t_min``, which is the single source of truth for this sign used
+    everywhere in the analysis package. Changing the convention only
+    requires editing this function.
+    """
+    return -delta_t_min / 2 if stream_type == "hot" else delta_t_min / 2
+
+
+def shifted_endpoints(stream, delta_t_min):
+    """Return a stream's (supply, target) temperatures on the shifted scale."""
+    shift = stream_shift(stream.type, delta_t_min)
+    return stream.supply_temperature + shift, stream.target_temperature + shift
+
+
 def shifted_temperatures(streams, delta_t_min):
     _validate_delta_t_min(delta_t_min)
-    hot_shift = -delta_t_min / 2
-    cold_shift = delta_t_min / 2
     temperatures = []
     for s in streams:
-        shift = hot_shift if s.type == "hot" else cold_shift
-        temperatures.extend([s.supply_temperature + shift, s.target_temperature + shift])
+        ts, tt = shifted_endpoints(s, delta_t_min)
+        temperatures.extend([ts, tt])
     return sorted(set(temperatures), reverse=True)
 
 

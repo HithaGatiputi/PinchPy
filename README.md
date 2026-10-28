@@ -3,8 +3,8 @@
 **PinchPy** is a Python library for Pinch Analysis, thermal process integration, and Heat Exchanger Network (HEN) synthesis.
 
 > [!NOTE]
-> **Current Status: Phases 1–5 complete — Stream model + validation, ΔTmin temperature shifting/intervals, the heat cascade / pinch-point / utility-targeting engine, Composite Curve / Grand Composite Curve plotting, and composite-curve area targeting.**
-> Composite curve data generation (`analysis.composite_curves`) is also implemented. HEN synthesis and ANN approximation are planned future work and have not yet been released.
+> **Current Status: Phases 1–6 complete — Stream model + validation, ΔTmin temperature shifting/intervals, the heat cascade / pinch-point / utility-targeting engine, Composite Curve / Grand Composite Curve plotting, composite-curve area targeting, and pinch-based HEN synthesis with a grid-diagram plot.**
+> ANN approximation is planned future work and has not yet been released. The HEN synthesis uses a bounded backtracking matcher (CP-rule stream splitting, current-temperature feasibility, partial-duty capping) that reaches the exact Phase 3 minimum utility targets on simple problems; on harder multi-stream problems it can still land slightly above the targets, since it only searches the maximum feasible duty per match rather than a full continuous optimization (see `synthesis/network_design.py`). It always issues a `RuntimeWarning` when that happens, and still closes the gap with a utility exchanger so no energy is ever lost.
 
 ---
 
@@ -207,6 +207,32 @@ python examples/phase5_area_target_example.py
 
 ---
 
+## 9a. HEN Synthesis & Grid Diagram (Phase 6)
+
+The pinch is used to split the problem into an above-pinch and a below-pinch sub-problem (`synthesis.pinch_split`), each matched independently so heat never crosses the pinch. Within each sub-problem, feasible matches (`synthesis.exchanger_matching`, which checks both the ΔTmin temperature feasibility and the CP inequality rule at the pinch) are picked greedily, largest duty first, until no further match is feasible; any remaining duty becomes a heater (above pinch) or cooler (below pinch).
+
+```python
+from pinchpy.models.stream import Stream
+from pinchpy.synthesis.network_design import design_network
+from pinchpy.synthesis.network_evaluation import evaluate_network
+from pinchpy.visualization.network_plot import plot_network
+
+streams = [Stream("H1", "hot", 180, 80, 2.0), Stream("C1", "cold", 20, 150, 1.5)]
+network = design_network(streams, delta_t_min=10, overall_heat_transfer_coefficient=0.5)
+
+print(evaluate_network(network, streams))
+# {'number_of_exchangers': ..., 'total_recovered_heat': ..., 'total_area': ..., 'minimum_units': ...}
+
+fig, ax = plot_network(streams, network)
+```
+
+- `design_network` returns a `HeatExchangerNetwork` of `HeatExchanger` objects; process matches have `is_utility=False`, heaters/coolers have `is_utility=True` (`hot_stream="HU"` for a heater, `cold_stream="CU"` for a cooler).
+- `overall_heat_transfer_coefficient` is optional; when given, each exchanger also gets `lmtd` and `area`.
+- The matcher is a greedy tick-off heuristic, not a full stream-splitting search, so on harder problems it can leave a stream short of a feasible partner; when that happens the leftover is still closed with a utility exchanger so no energy is lost, but a `RuntimeWarning` is raised because the design then exceeds the Phase 3 minimum utility targets.
+- `plot_network` draws the standard grid diagram: streams as horizontal lines on a shared temperature axis, matches as two circles joined by a line and labelled with duty, utilities as a single labelled circle.
+
+---
+
 ## 10. Project Phases
 
 - ✅ **Phase 1**: Process stream data model + validation
@@ -214,7 +240,7 @@ python examples/phase5_area_target_example.py
 - ✅ **Phase 3**: Heat cascade (Problem Table Algorithm), pinch-point identification & minimum utility targeting ($Q_{H,min}$, $Q_{C,min}$), composite-curve data generation
 - ✅ **Phase 4**: Composite Curve / Grand Composite Curve plotting
 - ✅ **Phase 5**: Heat-exchanger duty/LMTD/area calculations wired into composite curves
-- ⏳ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
+- ✅ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
 - ⏳ **Phase 7**: Synthetic dataset generation from the pinch engine
 - ⏳ **Phase 8**: ANN (MLP) surrogate model training & evaluation
 - ⏳ **Phase 9**: Integration + UI/CLI

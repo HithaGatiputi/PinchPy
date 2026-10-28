@@ -3,8 +3,8 @@
 **PinchPy** is a Python library for Pinch Analysis, thermal process integration, and Heat Exchanger Network (HEN) synthesis.
 
 > [!NOTE]
-> **Current Status: Phases 1–5 complete — Stream model + validation, ΔTmin temperature shifting/intervals, the heat cascade / pinch-point / utility-targeting engine, Composite Curve / Grand Composite Curve plotting, and composite-curve area targeting.**
-> Composite curve data generation (`analysis.composite_curves`) is also implemented. HEN synthesis and ANN approximation are planned future work and have not yet been released.
+> **Current Status: Phases 1–5 and 7–8 complete — Stream model + validation, ΔTmin temperature shifting/intervals, heat cascade / pinch-point / utility-targeting engine, Composite Curve / Grand Composite Curve plotting, composite-curve area targeting, and ANN surrogate modeling with OOD Guardrails.**
+> HEN synthesis (Phase 6) and UI/CLI (Phase 9) are planned future work.
 
 ---
 
@@ -184,7 +184,63 @@ print(result["total_area"])   # about 44.0 (m²)
 
 ---
 
-## 9. How to Run Tests
+---
+
+## 9. Machine Learning Surrogate & OOD Guardrail (Phases 7–8)
+
+PinchPy incorporates a machine-learning surrogate model (Scikit-Learn `MLPRegressor` pipeline) for rapid simultaneous prediction of:
+- **Primary Target**: Total Minimum Area $A_{\text{target}}$ ($\text{m}^2$)
+- **Secondary Targets**: Minimum Hot Utility $Q_{H,min}$ ($\text{kW}$) and Minimum Cold Utility $Q_{C,min}$ ($\text{kW}$)
+
+### Research Contribution: Out-of-Distribution (OOD) Guardrail
+Surrogate neural networks in process engineering can extrapolate dangerously when queried outside their training regime or produce thermodynamically unphysical outputs. PinchPy solves this with a multi-tier **OOD Guardrail**:
+1. **Domain Bounding**: Validates stream counts, temperature spans, $\Delta T_{min}$, and heat transfer coefficient $U$ against the training envelope.
+2. **Feature Density Anomaly Detection**: Uses a trained `IsolationForest` to assess the likelihood of incoming feature representations.
+3. **Physical Consistency Checks**: Validates First Law energy conservation ($Q_C - Q_H = \sum Q_H - \sum Q_C$) and non-negativity ($A > 0, Q_H \ge 0, Q_C \ge 0$).
+4. **Automatic Deterministic Fallback**: If an input is flagged as OOD or physically inconsistent, the system transparently falls back to the exact deterministic Phase 5 engine (`area_target`), guaranteeing safe, trusted results.
+
+```python
+from pinchpy.models.stream import Stream
+from pinchpy.ml.train import load_artifacts
+from pinchpy.ml.predict import predict_network_targets, predict_batch_network_targets
+
+streams = [
+    Stream("H1", "hot", 163.4, 28.7, 3.29),
+    Stream("H2", "hot", 125.5, 60.8, 2.35),
+    Stream("C1", "cold", 55.6, 184.5, 1.28),
+    Stream("C2", "cold", 52.8, 141.3, 2.3),
+]
+
+model, guardrail, _ = load_artifacts("models")
+
+# Single-case in-distribution inference
+res = predict_network_targets(streams, delta_t_min=10.0, overall_heat_transfer_coefficient=0.1, model=model, guardrail=guardrail)
+print(res)
+# {'total_area': 162.89, 'minimum_hot_utility': 73.70, 'minimum_cold_utility': 270.55, 'source': 'ann_surrogate', 'is_ood': False}
+
+# OOD query (e.g., extreme ΔTmin=120 °C): automatically falls back to deterministic engine
+res_ood = predict_network_targets(streams, delta_t_min=120.0, overall_heat_transfer_coefficient=0.1, model=model, guardrail=guardrail)
+print(res_ood)
+# {'total_area': 0.0, 'minimum_hot_utility': 226.70, 'minimum_cold_utility': 0.0, 'source': 'deterministic_fallback', 'is_ood': True}
+
+# Vectorized batch screening (high-throughput plant scoping)
+cases = [(streams, dt, 0.1) for dt in [10.0, 15.0, 20.0, 25.0]]
+batch_results = predict_batch_network_targets(cases, model=model, guardrail=guardrail)
+print(f"Screened {len(batch_results)} network candidates concurrently.")
+```
+
+### Measured Performance & Batch Speedup
+
+| Metric | Deterministic Phase 5 | Pure ANN Inference | Guarded ANN Pipeline | Batch ANN (N=2,000) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Single-Case Latency** | 145.4 µs | 245.2 µs | 10.3 ms | **83.2 µs / case** |
+| **Throughput** | ~6,880 / s | ~4,080 / s | ~97 / s | **~12,020 / s** |
+| **Speedup vs Deterministic** | 1.00x | 0.59x | 0.014x | **1.95x** |
+
+
+---
+
+## 10. How to Run Tests & Benchmarks
 
 Install the package in editable mode and run the test suite with `pytest`:
 
@@ -193,7 +249,13 @@ pip install -e .
 pytest -v
 ```
 
-To see the Phase 4 plots (opens four plot windows and saves PNGs to `data/processed/`):
+To run the complete Phase 7–8 synthetic generation, baseline comparison, and OOD benchmarking pipeline:
+
+```bash
+python scripts/train_and_evaluate.py
+```
+
+To see the Phase 4 plots (opens plot windows and saves PNGs to `data/processed/`):
 
 ```bash
 python examples/phase4_plots_example.py
@@ -207,7 +269,7 @@ python examples/phase5_area_target_example.py
 
 ---
 
-## 10. Project Phases
+## 11. Project Phases
 
 - ✅ **Phase 1**: Process stream data model + validation
 - ✅ **Phase 2**: $\Delta T_{min}$ temperature shifting and interval formation
@@ -215,6 +277,6 @@ python examples/phase5_area_target_example.py
 - ✅ **Phase 4**: Composite Curve / Grand Composite Curve plotting
 - ✅ **Phase 5**: Heat-exchanger duty/LMTD/area calculations wired into composite curves
 - ⏳ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
-- ⏳ **Phase 7**: Synthetic dataset generation from the pinch engine
-- ⏳ **Phase 8**: ANN (MLP) surrogate model training & evaluation
+- ✅ **Phase 7**: Synthetic dataset generation from the deterministic pinch engine
+- ✅ **Phase 8**: ANN (MLP) surrogate model training, baseline comparisons & OOD guardrail
 - ⏳ **Phase 9**: Integration + UI/CLI

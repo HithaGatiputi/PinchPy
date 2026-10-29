@@ -1,0 +1,103 @@
+import pytest
+
+from pinchpy.models.stream import Stream
+from pinchpy.analysis.pinch_point import utility_targets
+from pinchpy.synthesis.network_design import design_network
+from pinchpy.synthesis.network_evaluation import evaluate_network
+
+
+def _process_total(network):
+    return sum(e.duty for e in network.exchangers if not e.is_utility)
+
+
+def _heater_total(network):
+    return sum(e.duty for e in network.exchangers if e.is_utility and e.hot_stream == "HU")
+
+
+def _cooler_total(network):
+    return sum(e.duty for e in network.exchangers if e.is_utility and e.cold_stream == "CU")
+
+
+def test_design_network_empty_streams_returns_empty_network():
+    network = design_network([], delta_t_min=10)
+    assert network.exchangers == []
+
+
+def test_design_network_meets_utility_targets_simple_case():
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    targets = utility_targets(streams, 10)
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+
+    assert _heater_total(network) == pytest.approx(targets["minimum_hot_utility"])
+    assert _cooler_total(network) == pytest.approx(targets["minimum_cold_utility"])
+
+
+def test_design_network_conserves_total_energy_balance():
+    streams = [
+        Stream("H1", "hot", 163.4, 28.7, 3.29),
+        Stream("H2", "hot", 125.5, 60.8, 2.35),
+        Stream("C1", "cold", 55.6, 184.5, 1.28),
+        Stream("C2", "cold", 52.8, 141.3, 2.3),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+
+    total_hot_duty = sum(s.duty() for s in streams if s.type == "hot")
+    total_cold_duty = sum(s.duty() for s in streams if s.type == "cold")
+    process_total = _process_total(network)
+
+    assert process_total + _cooler_total(network) == pytest.approx(total_hot_duty)
+    assert process_total + _heater_total(network) == pytest.approx(total_cold_duty)
+
+
+def test_design_network_exchangers_respect_delta_t_min():
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    for e in network.exchangers:
+        if e.is_utility or e.hot_inlet is None:
+            continue
+        assert e.hot_inlet - e.cold_outlet >= 10 - 1e-6
+        assert e.hot_outlet - e.cold_inlet >= 10 - 1e-6
+
+
+def test_design_network_sizes_exchangers_when_U_given():
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    process = [e for e in network.exchangers if not e.is_utility]
+    assert process
+    for e in process:
+        assert e.area is not None and e.area > 0
+        assert e.lmtd is not None and e.lmtd > 0
+
+
+def test_design_network_without_U_leaves_area_none():
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    network = design_network(streams, 10)
+    for e in network.exchangers:
+        assert e.area is None
+
+
+def test_evaluate_network_reports_counts_and_duty():
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    summary = evaluate_network(network, streams)
+
+    assert summary["number_of_exchangers"] == len(network.exchangers)
+    assert summary["number_of_process_matches"] + summary["number_of_utility_exchangers"] == len(network.exchangers)
+    assert summary["total_recovered_heat"] == pytest.approx(_process_total(network))
+    assert "total_area" in summary
+    assert summary["minimum_units"] >= 1

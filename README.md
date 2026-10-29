@@ -4,7 +4,7 @@
 
 > [!NOTE]
 > **Current Status: Phases 1–6 complete — Stream model + validation, ΔTmin temperature shifting/intervals, the heat cascade / pinch-point / utility-targeting engine, Composite Curve / Grand Composite Curve plotting, composite-curve area targeting, and pinch-based HEN synthesis with a grid-diagram plot.**
-> ANN approximation is planned future work and has not yet been released. The HEN synthesis uses a greedy tick-off matching heuristic rather than full stream-splitting search, so it can occasionally land above the Phase 3 minimum utility targets on harder problems (see `synthesis/network_design.py`); it always issues a `RuntimeWarning` when that happens.
+> ANN approximation is planned future work and has not yet been released. The HEN synthesis uses a bounded backtracking matcher (CP-rule stream splitting, current-temperature feasibility, partial-duty capping) that reaches the exact Phase 3 minimum utility targets on simple problems; on harder multi-stream problems it can still land slightly above the targets, since it only searches the maximum feasible duty per match rather than a full continuous optimization (see `synthesis/network_design.py`). It always issues a `RuntimeWarning` when that happens, and still closes the gap with a utility exchanger so no energy is ever lost.
 
 ---
 

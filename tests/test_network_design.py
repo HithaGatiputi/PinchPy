@@ -88,6 +88,54 @@ def test_design_network_without_U_leaves_area_none():
         assert e.area is None
 
 
+def test_design_network_exact_boundary_match_raises_no_warning(recwarn):
+    # Chosen so the only feasible match sits at exactly delta_t_min apart --
+    # regression test for the feasible_pair '>' vs '>=' boundary bug.
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    assert not [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)]
+
+
+def test_design_network_reduces_stray_utility_on_hard_case():
+    # Regression test for the match-ordering/partial-duty fixes: this case
+    # used to strand ~125 kW of cold-stream duty with the single-pass greedy
+    # matcher; the backtracking + partial-duty-capped matcher gets it down to
+    # a small fraction of that (not necessarily to the exact Phase 3 target --
+    # see network_design's module docstring for the known remaining gap).
+    streams = [
+        Stream("H1", "hot", 163.4, 28.7, 3.29),
+        Stream("H2", "hot", 125.5, 60.8, 2.35),
+        Stream("C1", "cold", 55.6, 184.5, 1.28),
+        Stream("C2", "cold", 52.8, 141.3, 2.3),
+    ]
+    targets = utility_targets(streams, 10)
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+
+    excess_hot_utility = _heater_total(network) - targets["minimum_hot_utility"]
+    assert 0 <= excess_hot_utility < 20  # was ~125 kW before the fix
+
+
+def test_design_network_allows_partial_duty_when_full_ticket_off_is_infeasible():
+    # A hot stream that has already partly cooled against one cold stream can
+    # still feasibly serve part (not all) of a second cold stream's duty;
+    # the matcher should not skip this pair outright just because the full
+    # tick-off amount would be infeasible.
+    streams = [
+        Stream("H1", "hot", 163.4, 28.7, 3.29),
+        Stream("H2", "hot", 125.5, 60.8, 2.35),
+        Stream("C1", "cold", 55.6, 184.5, 1.28),
+        Stream("C2", "cold", 52.8, 141.3, 2.3),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    process = [e for e in network.exchangers if not e.is_utility]
+    # At least one process match should transfer less than either stream's
+    # full remaining duty at the time, i.e. a genuine partial match.
+    assert any(e.duty < min(s.duty() for s in streams if s.id in (e.hot_stream, e.cold_stream)) for e in process)
+
+
 def test_evaluate_network_reports_counts_and_duty():
     streams = [
         Stream("H1", "hot", 180, 80, 2.0),

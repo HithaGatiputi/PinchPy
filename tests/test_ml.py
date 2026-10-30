@@ -16,7 +16,12 @@ from pinchpy.ml.evaluate import (
 )
 from pinchpy.ml.features import case_features, feature_names
 from pinchpy.ml.guardrail import OODGuardrail
-from pinchpy.ml.predict import predict_network_targets, predict_targets
+from pinchpy.ml.predict import (
+    FastANNPredictor,
+    predict_ann_fast,
+    predict_network_targets,
+    predict_targets,
+)
 from pinchpy.ml.train import (
     build_ann,
     load_artifacts,
@@ -588,6 +593,59 @@ def test_pinch_targets_linear_scaling_in_cp(four_streams):
         assert scaled_util["minimum_hot_utility"] == pytest.approx(base_util["minimum_hot_utility"] * k, rel=1e-5)
         assert scaled_util["minimum_cold_utility"] == pytest.approx(base_util["minimum_cold_utility"] * k, rel=1e-5)
         assert scaled_area["total_area"] == pytest.approx(base_area["total_area"] * k, rel=1e-5)
+
+
+def test_numpy_fast_path_matches_sklearn_predict():
+    """Verify that FastANNPredictor pure NumPy evaluation matches scikit-learn predict."""
+    df = generate_dataset(n_cases=30, seed=42)
+    X = df.iloc[:, :-3].to_numpy()
+    y = df.iloc[:, -3:].to_numpy()
+    model = train_ann(X, y, hidden_layer_sizes=(32, 16), max_iter=25, random_state=42)
+
+    fast_pred = FastANNPredictor.from_model(model)
+    assert fast_pred is not None
+
+    # Test single-case predictions match across test samples
+    for i in range(10):
+        x_single = X[i]
+        sk_single = model.predict(x_single.reshape(1, -1))[0]
+        np_single = fast_pred.predict_single(x_single)
+        fast_fn_single = predict_ann_fast(model, x_single)
+
+        np.testing.assert_allclose(np_single, sk_single, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(fast_fn_single, sk_single, rtol=1e-5, atol=1e-5)
+
+    # Test batch predictions match
+    sk_batch = model.predict(X[:10])
+    np_batch = fast_pred.predict_batch(X[:10])
+    np.testing.assert_allclose(np_batch, sk_batch, rtol=1e-5, atol=1e-5)
+
+
+def test_guardrail_fast_mahalanobis_matches_scaler_transform():
+    """Verify that guardrail Mahalanobis evaluation without scaler.transform matches."""
+    df = generate_dataset(n_cases=30, seed=42)
+    X = df.iloc[:, :-3].to_numpy()
+
+    guardrail = OODGuardrail(detector_type="mahalanobis").fit(X)
+    assert guardrail.scaler_mean_ is not None
+    assert guardrail.scaler_scale_ is not None
+
+    for i in range(10):
+        x = X[i]
+        # Fast check
+        is_ood, score, reason = guardrail.check_input(x)
+
+        # Reference manual calculation with scaler.transform
+        x_scaled = guardrail.scaler.transform(x.reshape(1, -1))
+        diff = x_scaled[0] - guardrail.covariance_location_
+        d2 = float(diff @ guardrail.precision_ @ diff)
+        dist = np.sqrt(max(0.0, d2))
+        expected_score = float(guardrail.threshold_ - dist)
+        expected_ood = dist > guardrail.threshold_
+
+        assert is_ood == expected_ood
+        assert pytest.approx(expected_score, abs=1e-5) == score
+
 
 
 

@@ -319,13 +319,15 @@ def benchmark_latency(
         t1 = time.perf_counter_ns()
         feat_times.append((t1 - t0) / (n_iterations * 1000.0))
 
-    # 3. Pure ANN inference alone (on pre-extracted features)
+    # 3. Pure ANN inference alone (on pre-extracted features using NumPy fast path)
+    from .predict import predict_ann_fast
+
     x_pre = case_features(streams, delta_t_min, overall_heat_transfer_coefficient).reshape(1, -1)
     ann_times = []
     for _ in range(n_rounds):
         t0 = time.perf_counter_ns()
         for _ in range(n_iterations):
-            _ = model.predict(x_pre)
+            _ = predict_ann_fast(model, x_pre)
         t1 = time.perf_counter_ns()
         ann_times.append((t1 - t0) / (n_iterations * 1000.0))
 

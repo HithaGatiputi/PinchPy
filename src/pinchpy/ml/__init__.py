@@ -12,7 +12,13 @@ from .evaluate import (
 )
 from .features import case_features, feature_names, stream_features
 from .guardrail import OODGuardrail
-from .predict import predict_batch_network_targets, predict_network_targets, predict_targets
+from .predict import (
+    FastANNPredictor,
+    predict_ann_fast,
+    predict_batch_network_targets,
+    predict_network_targets,
+    predict_targets,
+)
 from .train import (
     build_ann,
     load_artifacts,
@@ -44,6 +50,8 @@ __all__ = [
     "evaluate_ood_detection",
     "benchmark_latency",
     "benchmark_batch_screening",
+    "FastANNPredictor",
+    "predict_ann_fast",
     "predict_targets",
     "predict_network_targets",
     "predict_batch_network_targets",

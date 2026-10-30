@@ -57,6 +57,8 @@ class OODGuardrail:
 
     # Density / distance estimators
     scaler: StandardScaler | None = None
+    scaler_mean_: np.ndarray | None = None
+    scaler_scale_: np.ndarray | None = None
     covariance_location_: np.ndarray | None = None
     precision_: np.ndarray | None = None
     threshold_: float = 0.0
@@ -104,6 +106,8 @@ class OODGuardrail:
             cov_est.fit(X_scaled)
             self.covariance_location_ = cov_est.location_
             self.precision_ = cov_est.precision_
+            self.scaler_mean_ = np.asarray(self.scaler.mean_, dtype=float)
+            self.scaler_scale_ = np.asarray(self.scaler.scale_, dtype=float)
 
             # Compute training distances and threshold
             diff = X_scaled - self.covariance_location_
@@ -233,9 +237,18 @@ class OODGuardrail:
         if not self.is_fitted:
             return False, 0.0, None
 
-        if self.detector_type == "mahalanobis" and self.scaler is not None and self.precision_ is not None:
-            x_scaled = self.scaler.transform(x_arr)
-            diff = x_scaled[0] - self.covariance_location_
+        if self.detector_type == "mahalanobis" and self.precision_ is not None and self.covariance_location_ is not None:
+            scaler_mean = self.scaler_mean_ if self.scaler_mean_ is not None else (getattr(self.scaler, "mean_", None) if self.scaler is not None else None)
+            scaler_scale = self.scaler_scale_ if self.scaler_scale_ is not None else (getattr(self.scaler, "scale_", None) if self.scaler is not None else None)
+
+            if scaler_mean is not None and scaler_scale is not None:
+                x_vec = x_arr[0] if x_arr.ndim == 2 else x_arr
+                diff = (x_vec - scaler_mean) / scaler_scale - self.covariance_location_
+            elif self.scaler is not None:
+                diff = self.scaler.transform(x_arr)[0] - self.covariance_location_
+            else:
+                diff = (x_arr[0] if x_arr.ndim == 2 else x_arr) - self.covariance_location_
+
             d2 = float(diff @ self.precision_ @ diff)
             dist = math.sqrt(max(0.0, d2))
             score = float(self.threshold_ - dist)
@@ -298,8 +311,17 @@ class OODGuardrail:
         # Tier 2 Vectorized Detector
         scores = np.zeros(n_samples, dtype=float)
         if self.is_fitted:
-            if self.detector_type == "mahalanobis" and self.scaler is not None and self.precision_ is not None:
-                X_scaled = self.scaler.transform(X_arr)
+            if self.detector_type == "mahalanobis" and self.precision_ is not None and self.covariance_location_ is not None:
+                scaler_mean = self.scaler_mean_ if self.scaler_mean_ is not None else (getattr(self.scaler, "mean_", None) if self.scaler is not None else None)
+                scaler_scale = self.scaler_scale_ if self.scaler_scale_ is not None else (getattr(self.scaler, "scale_", None) if self.scaler is not None else None)
+
+                if scaler_mean is not None and scaler_scale is not None:
+                    X_scaled = (X_arr - scaler_mean) / scaler_scale
+                elif self.scaler is not None:
+                    X_scaled = self.scaler.transform(X_arr)
+                else:
+                    X_scaled = X_arr
+
                 diff = X_scaled - self.covariance_location_
                 d2 = np.sum(diff * (diff @ self.precision_), axis=1)
                 dists = np.sqrt(np.maximum(0.0, d2))
@@ -418,4 +440,7 @@ class OODGuardrail:
             obj = pickle.load(f)
             if not hasattr(obj, "detector_type"):
                 obj.detector_type = "isolation_forest" if getattr(obj, "detector", None) is not None else "mahalanobis"
+            if getattr(obj, "scaler_mean_", None) is None and getattr(obj, "scaler", None) is not None:
+                obj.scaler_mean_ = np.asarray(obj.scaler.mean_, dtype=float)
+                obj.scaler_scale_ = np.asarray(obj.scaler.scale_, dtype=float)
             return obj

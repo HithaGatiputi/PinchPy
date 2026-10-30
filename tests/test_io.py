@@ -70,3 +70,18 @@ CS1 40 140 3.0
 def test_load_dat_nonexistent_file_raises():
     with pytest.raises(FileNotFoundError):
         load_furman_sahinidis_dat("non_existent_file.dat")
+
+
+def test_load_chen_grossmann_miller_dat_file():
+    sample_path = Path("data/benchmarks/chen_grossmann_miller/dat_files/balanced5.dat")
+    assert sample_path.exists(), "Benchmark balanced5.dat should exist"
+
+    streams, dtmin = load_dat_file(sample_path)
+    assert dtmin == 10.0
+    assert len(streams) == 10
+
+    hot_streams = [s for s in streams if s.stream_type == "hot"]
+    cold_streams = [s for s in streams if s.stream_type == "cold"]
+    assert len(hot_streams) == 5
+    assert len(cold_streams) == 5
+

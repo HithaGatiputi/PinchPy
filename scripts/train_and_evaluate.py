@@ -29,7 +29,9 @@ from pinchpy.utils.io import load_furman_sahinidis_dat
 
 DATA_DIR = Path("data/synthetic")
 MODEL_DIR = Path("models")
-BENCHMARK_DIR = Path("data/benchmarks/furman_sahinidis/dat_files")
+FURMAN_DIR = Path("data/benchmarks/furman_sahinidis/dat_files")
+CGM_DIR = Path("data/benchmarks/chen_grossmann_miller/dat_files")
+BENCHMARK_DIR = FURMAN_DIR
 
 
 def main() -> None:
@@ -296,19 +298,25 @@ def main() -> None:
     print(f"  -> OOD Detection Alone:          {single_latency['ood_detection_us']:>8.1f} ± {single_latency['ood_detection_std_us']:<5.1f} µs (Fast Mahalanobis)")
     print(f"  -> Guarded ANN Pipeline:         {single_latency['guarded_latency_us']:>8.1f} ± {single_latency['guarded_latency_std_us']:<5.1f} µs (< 1 ms BUDGET ACHIEVED)")
 
-    # 7. Evaluation on Real Literature Benchmarks with CP Scaling (Furman & Sahinidis, 2004)
+    # 7. Evaluation on Real Literature Benchmarks with CP Scaling
     print("\n[6/6] Evaluating on Real Literature Benchmark Problems with CP Rescaling...")
-    bench_files = sorted(BENCHMARK_DIR.glob("*.dat"))
-
-    # Treat 9sp-al1 and 10sp-la1 as one problem (identical streams, only utility costs differ)
     unique_bench_items = []
-    for bpath in bench_files:
-        if bpath.stem == "9sp-al1":
-            continue
-        display_name = "10sp-la1 / 9sp-al1" if bpath.stem == "10sp-la1" else bpath.stem
-        unique_bench_items.append((bpath, display_name))
 
-    print(f"Loaded {len(unique_bench_items)} unique literature benchmark instances (treating 9sp-al1 and 10sp-la1 as one).")
+    # 1. Furman & Sahinidis (2004) instances (treat 9sp-al1 and 10sp-la1 as one)
+    if FURMAN_DIR.exists():
+        for bpath in sorted(FURMAN_DIR.glob("*.dat")):
+            if bpath.stem == "9sp-al1":
+                continue
+            display_name = "10sp-la1 / 9sp-al1" if bpath.stem == "10sp-la1" else bpath.stem
+            unique_bench_items.append((bpath, display_name))
+
+    # 2. Chen, Grossmann, & Miller (2015) instances
+    if CGM_DIR.exists():
+        for bpath in sorted(CGM_DIR.glob("*.dat")):
+            display_name = f"cgm/{bpath.stem}"
+            unique_bench_items.append((bpath, display_name))
+
+    print(f"Loaded {len(unique_bench_items)} literature benchmark instances (25 Furman & Sahinidis, 10 Chen-Grossmann-Miller).")
 
     bench_results: list[dict[str, Any]] = []
     in_distribution_benchmarks: list[dict[str, Any]] = []

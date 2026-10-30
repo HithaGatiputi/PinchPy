@@ -232,11 +232,11 @@ def _search(hot_states, cold_states, delta_t_min, U, region, split_counter, budg
     return [], hot_states, cold_states, _remaining_duty(hot_states, cold_states)
 
 
-def _match_region(streams, delta_t_min, U, region, counter, split_counter):
+def _match_region(streams, delta_t_min, U, region, counter, split_counter, search_budget=500):
     hot_states = [_StreamState(s) for s in streams if s.type == "hot"]
     cold_states = [_StreamState(s) for s in streams if s.type == "cold"]
 
-    budget = [2000]
+    budget = [search_budget]
     specs, final_hot, final_cold, _leftover = _search(
         hot_states, cold_states, delta_t_min, U, region, split_counter, budget
     )
@@ -306,7 +306,7 @@ def _utility_exchangers(states, delta_t_min, U, utility_name, utility_type, coun
     return exchangers
 
 
-def design_network(streams, delta_t_min, overall_heat_transfer_coefficient=None):
+def design_network(streams, delta_t_min, overall_heat_transfer_coefficient=None, search_budget: int = 500):
     """Synthesize a heat exchanger network meeting the Phase 3 utility targets.
 
     Returns a ``HeatExchangerNetwork`` whose exchangers are the process
@@ -314,6 +314,8 @@ def design_network(streams, delta_t_min, overall_heat_transfer_coefficient=None)
     heaters/coolers (``is_utility=True``) needed to close any remaining duty.
     ``overall_heat_transfer_coefficient`` (U, kW/(m^2*C)) is optional; when
     given, each exchanger's ``area`` is also computed.
+    ``search_budget`` sets the maximum branch exploration budget for
+    backtracking stream matching (default 500).
     """
     targets = utility_targets(streams, delta_t_min)
     if targets["pinch_hot_temperature"] is None:
@@ -326,10 +328,10 @@ def design_network(streams, delta_t_min, overall_heat_transfer_coefficient=None)
     counter = [0]
     split_counter = [0]
     above_exchangers, above_hot, above_cold = _match_region(
-        above, delta_t_min, overall_heat_transfer_coefficient, "above", counter, split_counter
+        above, delta_t_min, overall_heat_transfer_coefficient, "above", counter, split_counter, search_budget=search_budget
     )
     below_exchangers, below_hot, below_cold = _match_region(
-        below, delta_t_min, overall_heat_transfer_coefficient, "below", counter, split_counter
+        below, delta_t_min, overall_heat_transfer_coefficient, "below", counter, split_counter, search_budget=search_budget
     )
 
     heaters = _utility_exchangers(

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import TransformedTargetRegressor
 from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
@@ -17,14 +19,46 @@ from sklearn.preprocessing import StandardScaler
 from .guardrail import OODGuardrail
 
 
+class LogAreaTargetTransformer(BaseEstimator, TransformerMixin):
+    """Target transformer applying log1p to A_target (column 0) and standardizing targets."""
+
+    def __init__(self) -> None:
+        self.scaler = StandardScaler()
+
+    def fit(self, y: np.ndarray, **fit_params: Any) -> LogAreaTargetTransformer:
+        y_arr = np.asarray(y, dtype=float).copy()
+        if y_arr.ndim == 1:
+            y_arr = y_arr.reshape(-1, 1)
+        y_arr[:, 0] = np.log1p(np.maximum(0.0, y_arr[:, 0]))
+        self.scaler.fit(y_arr)
+        return self
+
+    def transform(self, y: np.ndarray) -> np.ndarray:
+        y_arr = np.asarray(y, dtype=float).copy()
+        if y_arr.ndim == 1:
+            y_arr = y_arr.reshape(-1, 1)
+        y_arr[:, 0] = np.log1p(np.maximum(0.0, y_arr[:, 0]))
+        return self.scaler.transform(y_arr)
+
+    def inverse_transform(self, y: np.ndarray) -> np.ndarray:
+        y_unscaled = self.scaler.inverse_transform(y)
+        y_out = y_unscaled.copy()
+        # Clip exponent to avoid numerical overflow when called on extreme OOD samples
+        clipped_exp = np.clip(y_unscaled[:, 0], -50.0, 50.0)
+        y_out[:, 0] = np.expm1(clipped_exp)
+        y_out = np.maximum(0.0, y_out)
+        return y_out
+
+
 def build_ann(
     hidden_layer_sizes: tuple[int, ...] = (128, 64, 32),
     learning_rate_init: float = 1e-3,
     max_iter: int = 1000,
     random_state: int = 42,
-) -> Pipeline:
+    use_log1p_area: bool = True,
+) -> TransformedTargetRegressor | Pipeline:
     """Build the project's primary feed-forward ANN (MLP) pipeline."""
-    return Pipeline([
+    base_pipeline = Pipeline([
         ("scaler", StandardScaler()),
         ("ann", MLPRegressor(
             hidden_layer_sizes=hidden_layer_sizes,
@@ -38,6 +72,12 @@ def build_ann(
             random_state=random_state,
         )),
     ])
+    if use_log1p_area:
+        return TransformedTargetRegressor(
+            regressor=base_pipeline,
+            transformer=LogAreaTargetTransformer(),
+        )
+    return base_pipeline
 
 
 def train_ann(
@@ -47,19 +87,21 @@ def train_ann(
     learning_rate_init: float = 1e-3,
     max_iter: int = 1000,
     random_state: int = 42,
-) -> Pipeline:
-    """Fit the ANN surrogate on training data and return the trained pipeline."""
+    use_log1p_area: bool = True,
+) -> TransformedTargetRegressor | Pipeline:
+    """Fit the ANN surrogate on training data and return the trained model."""
     model = build_ann(
         hidden_layer_sizes=hidden_layer_sizes,
         learning_rate_init=learning_rate_init,
         max_iter=max_iter,
         random_state=random_state,
+        use_log1p_area=use_log1p_area,
     )
     model.fit(np.asarray(X, dtype=float), np.asarray(y, dtype=float))
     return model
 
 
-def train_mlp(*args, **kwargs) -> Pipeline:
+def train_mlp(*args, **kwargs) -> Any:
     """Backward-compatible alias for train_ann."""
     return train_ann(*args, **kwargs)
 
@@ -69,18 +111,7 @@ def train_baselines(
     y_train: np.ndarray,
     random_state: int = 42,
 ) -> dict[str, Any]:
-    """Train comparative baseline models on the same training partition.
-
-    Models:
-    1. Dummy Regressor (predicts target mean)
-    2. Linear / Ridge Regressor (with feature standardization)
-    3. Random Forest Regressor (non-linear ensemble baseline)
-
-    Returns
-    -------
-    dict[str, Any]
-        Dictionary of fitted baseline models.
-    """
+    """Train comparative baseline models on the same training partition."""
     X_arr = np.asarray(X_train, dtype=float)
     y_arr = np.asarray(y_train, dtype=float)
 
@@ -113,7 +144,7 @@ def train_baselines(
 
 
 def save_artifacts(
-    model: Pipeline,
+    model: Any,
     guardrail: OODGuardrail | None = None,
     metadata: dict[str, Any] | None = None,
     output_dir: str | Path = "models",
@@ -135,7 +166,7 @@ def save_artifacts(
 
 def load_artifacts(
     model_dir: str | Path = "models",
-) -> tuple[Pipeline, OODGuardrail | None, dict[str, Any] | None]:
+) -> tuple[Any, OODGuardrail | None, dict[str, Any] | None]:
     """Load serialized ANN model, guardrail, and metadata from disk."""
     m_dir = Path(model_dir)
 

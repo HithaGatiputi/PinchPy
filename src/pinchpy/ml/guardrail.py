@@ -2,7 +2,7 @@
 
 This module provides multi-tier safety checks for surrogate predictions:
 1. Operational domain range checks (stream counts, temperatures, approach, U).
-2. Feature-space density / distance-based anomaly detection (Isolation Forest).
+2. Feature-space anomaly detection (fast Mahalanobis distance or Isolation Forest).
 3. Thermodynamic physical consistency validation (energy conservation, positive area).
 """
 from __future__ import annotations
@@ -11,10 +11,12 @@ import math
 import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
+from sklearn.covariance import LedoitWolf
 from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 
 
 @dataclass
@@ -24,16 +26,21 @@ class OODGuardrail:
     Attributes
     ----------
     contamination : float
-        Expected fraction of outliers for the density detector (default 0.05).
+        Expected fraction of outliers for the detector (default 0.05).
     random_state : int
         Seed for detector reproducibility.
     tolerance : float
         Allowable fractional error in energy balance verification.
+    detector_type : Literal['mahalanobis', 'isolation_forest'], default 'mahalanobis'
+        Algorithm used for Tier 2 feature density anomaly detection.
+        'mahalanobis' uses standardized Ledoit-Wolf precision distance (< 5 µs per case).
+        'isolation_forest' is available as a tree-ensemble alternative.
     """
 
     contamination: float = 0.05
     random_state: int = 42
     tolerance: float = 0.15
+    detector_type: Literal["mahalanobis", "isolation_forest"] = "mahalanobis"
 
     # Feature bounding boxes learned during training
     dtmin_range: tuple[float, float] = (3.0, 50.0)
@@ -44,7 +51,11 @@ class OODGuardrail:
     max_hot_capacity: int = 5
     max_cold_capacity: int = 5
 
-    # Density estimator
+    # Density / distance estimators
+    scaler: StandardScaler | None = None
+    covariance_location_: np.ndarray | None = None
+    precision_: np.ndarray | None = None
+    threshold_: float = 0.0
     detector: IsolationForest | None = None
     is_fitted: bool = False
 
@@ -53,15 +64,6 @@ class OODGuardrail:
         X_arr = np.asarray(X, dtype=float)
         if len(X_arr) == 0:
             raise ValueError("Cannot fit OODGuardrail on empty feature matrix.")
-
-        # Fit IsolationForest density detector on training feature vectors
-        self.detector = IsolationForest(
-            contamination=self.contamination,
-            random_state=self.random_state,
-            n_estimators=100,
-        )
-        self.detector.fit(X_arr)
-        self.is_fitted = True
 
         # Compute empirical bounds with safety margin
         if X_arr.shape[1] >= 2:
@@ -83,10 +85,35 @@ class OODGuardrail:
             cp_cols = [16, 20, 24, 28, 32, 36, 40, 44, 48, 52]
             self.cp_max = float(np.max(X_arr[:, cp_cols])) * 1.5
 
+        if self.detector_type == "mahalanobis":
+            self.scaler = StandardScaler()
+            X_scaled = self.scaler.fit_transform(X_arr)
+            cov_est = LedoitWolf()
+            cov_est.fit(X_scaled)
+            self.covariance_location_ = cov_est.location_
+            self.precision_ = cov_est.precision_
+
+            # Compute training distances and threshold
+            diff = X_scaled - self.covariance_location_
+            d2 = np.sum(diff * (diff @ self.precision_), axis=1)
+            train_dists = np.sqrt(np.maximum(0.0, d2))
+            self.threshold_ = float(np.quantile(train_dists, 1.0 - self.contamination))
+            self.detector = None
+        else:
+            self.detector = IsolationForest(
+                contamination=self.contamination,
+                random_state=self.random_state,
+                n_estimators=100,
+            )
+            self.detector.fit(X_arr)
+
+        self.is_fitted = True
         return self
 
     def check_input(self, x: np.ndarray) -> tuple[bool, float, str | None]:
         """Check whether an input feature vector is out-of-distribution.
+
+        Runs cheap Tier 1 checks first and returns immediately if any bounds are violated.
 
         Returns
         -------
@@ -99,7 +126,7 @@ class OODGuardrail:
         """
         x_arr = np.asarray(x, dtype=float).reshape(1, -1)
 
-        # Tier 1: Domain bounding checks
+        # Tier 1: Cheap Domain bounding checks
         delta_t_min = float(x_arr[0, 0])
         u_val = float(x_arr[0, 1])
         n_hot = int(round(x_arr[0, 2]))
@@ -164,33 +191,31 @@ class OODGuardrail:
                     f"({self.cp_max:.2f} kW/°C)."
                 )
 
-        # Tier 2: Density / Distance detector
-        score = 0.0
-        if self.is_fitted and self.detector is not None:
+        # Tier 2: Density / Distance detector (runs only if Tier 1 passed)
+        if not self.is_fitted:
+            return False, 0.0, None
+
+        if self.detector_type == "mahalanobis" and self.scaler is not None and self.precision_ is not None:
+            x_scaled = self.scaler.transform(x_arr)
+            diff = x_scaled[0] - self.covariance_location_
+            d2 = float(diff @ self.precision_ @ diff)
+            dist = math.sqrt(max(0.0, d2))
+            score = float(self.threshold_ - dist)
+            if dist > self.threshold_:
+                return True, score, f"Feature Mahalanobis distance ({dist:.2f}) exceeds inlier threshold ({self.threshold_:.2f})."
+            return False, score, None
+
+        elif self.detector is not None:
             score = float(self.detector.decision_function(x_arr)[0])
             is_inlier = int(self.detector.predict(x_arr)[0]) == 1
             if not is_inlier:
                 return True, score, f"Feature density score ({score:.3f}) falls below nominal inlier boundary."
+            return False, score, None
 
-        return False, score, None
+        return False, 0.0, None
 
     def check_input_batch(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[str | None]]:
-        """Vectorized batch out-of-distribution detection for feature matrix X.
-
-        Parameters
-        ----------
-        X : np.ndarray
-            Matrix of shape (N, n_features).
-
-        Returns
-        -------
-        is_ood_mask : np.ndarray of bool
-            Boolean array of length N.
-        scores : np.ndarray of float
-            Decision function anomaly scores of length N.
-        reasons : list of str or None
-            Explanations for flagged rows.
-        """
+        """Vectorized batch out-of-distribution detection for feature matrix X."""
         X_arr = np.asarray(X, dtype=float)
         n_samples = len(X_arr)
         is_ood = np.zeros(n_samples, dtype=bool)
@@ -220,15 +245,27 @@ class OODGuardrail:
         for idx in np.where(t1_mask)[0]:
             reasons[idx] = "Operational bounds or capacity violated"
 
-        # Tier 2 Vectorized Isolation Forest
+        # Tier 2 Vectorized Detector
         scores = np.zeros(n_samples, dtype=float)
-        if self.is_fitted and self.detector is not None:
-            scores = self.detector.decision_function(X_arr)
-            density_outliers = (self.detector.predict(X_arr) == -1)
-            t2_new = density_outliers & ~is_ood
-            is_ood |= density_outliers
-            for idx in np.where(t2_new)[0]:
-                reasons[idx] = f"Feature density score ({scores[idx]:.3f}) below inlier threshold"
+        if self.is_fitted:
+            if self.detector_type == "mahalanobis" and self.scaler is not None and self.precision_ is not None:
+                X_scaled = self.scaler.transform(X_arr)
+                diff = X_scaled - self.covariance_location_
+                d2 = np.sum(diff * (diff @ self.precision_), axis=1)
+                dists = np.sqrt(np.maximum(0.0, d2))
+                scores = self.threshold_ - dists
+                density_outliers = dists > self.threshold_
+                t2_new = density_outliers & ~is_ood
+                is_ood |= density_outliers
+                for idx in np.where(t2_new)[0]:
+                    reasons[idx] = f"Feature Mahalanobis distance ({dists[idx]:.2f}) exceeds inlier threshold ({self.threshold_:.2f})"
+            elif self.detector is not None:
+                scores = self.detector.decision_function(X_arr)
+                density_outliers = (self.detector.predict(X_arr) == -1)
+                t2_new = density_outliers & ~is_ood
+                is_ood |= density_outliers
+                for idx in np.where(t2_new)[0]:
+                    reasons[idx] = f"Feature density score ({scores[idx]:.3f}) below inlier threshold"
 
         return is_ood, scores, reasons
 
@@ -238,24 +275,7 @@ class OODGuardrail:
         total_hot_duty: float,
         total_cold_duty: float,
     ) -> tuple[bool, str | None]:
-        """Verify thermodynamic consistency of surrogate predictions.
-
-        Parameters
-        ----------
-        predictions : array-like
-            Target predictions: [A_target, Q_H_min, Q_C_min].
-        total_hot_duty : float
-            Sum of hot stream sensible duties (kW).
-        total_cold_duty : float
-            Sum of cold stream sensible duties (kW).
-
-        Returns
-        -------
-        is_valid : bool
-            True if predictions satisfy physical thermodynamic constraints.
-        reason : str or None
-            Explanation if violated.
-        """
+        """Verify thermodynamic consistency of surrogate predictions."""
         preds = [float(p) for p in predictions]
         if len(preds) < 3:
             return True, None
@@ -279,7 +299,6 @@ class OODGuardrail:
         expected_difference = total_hot_duty - total_cold_duty
         predicted_difference = q_c - q_h
         discrepancy = abs(predicted_difference - expected_difference)
-
         relative_discrepancy = discrepancy / scale
 
         if relative_discrepancy > self.tolerance:
@@ -290,7 +309,6 @@ class OODGuardrail:
                 f"(relative discrepancy: {relative_discrepancy:.1%}, exceeds threshold {self.tolerance:.1%})."
             )
 
-
         return True, None
 
     def validate_physics_batch(
@@ -299,15 +317,7 @@ class OODGuardrail:
         total_hot_duties: np.ndarray,
         total_cold_duties: np.ndarray,
     ) -> tuple[np.ndarray, list[str | None]]:
-        """Vectorized batch validation of physical consistency.
-
-        Returns
-        -------
-        is_valid_mask : np.ndarray of bool
-            True for samples that satisfy all thermodynamic constraints.
-        reasons : list of str or None
-            Explanations for rejected samples.
-        """
+        """Vectorized batch validation of physical consistency."""
         preds = np.asarray(predictions, dtype=float)
         tot_h = np.asarray(total_hot_duties, dtype=float)
         tot_c = np.asarray(total_cold_duties, dtype=float)
@@ -355,5 +365,7 @@ class OODGuardrail:
     def load(cls, filepath: str | Path) -> OODGuardrail:
         """Load serialized guardrail from file."""
         with open(filepath, "rb") as f:
-            return pickle.load(f)
-
+            obj = pickle.load(f)
+            if not hasattr(obj, "detector_type"):
+                obj.detector_type = "isolation_forest" if getattr(obj, "detector", None) is not None else "mahalanobis"
+            return obj

@@ -461,3 +461,82 @@ def test_untrusted_prediction_never_leaked(four_streams):
     assert res2["minimum_cold_utility"] < 1000.0
 
 
+def test_guarded_inference_latency_budget(four_streams):
+    """Verify that single-case guarded surrogate inference executes under 1 ms."""
+    import time
+    df = generate_dataset(n_cases=30, seed=42)
+    X = df.iloc[:, :-3].to_numpy()
+    y = df.iloc[:, -3:].to_numpy()
+    model = train_ann(X, y, hidden_layer_sizes=(16,), max_iter=20, random_state=42)
+    guardrail = OODGuardrail().fit(X)
+
+    # Warm-up
+    for _ in range(10):
+        _ = predict_network_targets(
+            four_streams,
+            delta_t_min=10.0,
+            overall_heat_transfer_coefficient=0.1,
+            model=model,
+            guardrail=guardrail,
+        )
+
+    n_calls = 50
+    t0 = time.perf_counter_ns()
+    for _ in range(n_calls):
+        _ = predict_network_targets(
+            four_streams,
+            delta_t_min=10.0,
+            overall_heat_transfer_coefficient=0.1,
+            model=model,
+            guardrail=guardrail,
+        )
+    t1 = time.perf_counter_ns()
+    mean_latency_ms = (t1 - t0) / (n_calls * 1e6)
+
+    # Target: strictly under 1.0 ms (1000 µs)
+    assert mean_latency_ms < 1.0, f"Latency {mean_latency_ms:.3f} ms exceeded 1 ms budget"
+
+
+def test_oversized_benchmark_case_flagged_ood():
+    """Verify that oversized literature benchmark problems (>5 hot or cold streams) are flagged OOD, not crashing."""
+    from pinchpy.utils.io import load_furman_sahinidis_dat
+
+    # 12sp1 has 9 hot streams and 3 cold streams
+    bench_file = Path("data/benchmarks/furman_sahinidis/dat_files/12sp1.dat")
+    streams, dtmin = load_furman_sahinidis_dat(bench_file)
+    n_hot = sum(1 for s in streams if s.stream_type == "hot")
+    assert n_hot == 9, "12sp1 should have 9 hot streams"
+
+    df = generate_dataset(n_cases=30, seed=42)
+    X = df.iloc[:, :-3].to_numpy()
+    y = df.iloc[:, -3:].to_numpy()
+    model = train_ann(X, y, hidden_layer_sizes=(16,), max_iter=20, random_state=42)
+    guardrail = OODGuardrail().fit(X)
+
+    # Auto fallback mode: flags OOD and safely computes exact deterministic result without crashing
+    res = predict_network_targets(
+        streams,
+        delta_t_min=dtmin,
+        overall_heat_transfer_coefficient=0.1,
+        model=model,
+        guardrail=guardrail,
+        auto_fallback=True,
+    )
+    assert res["is_ood"] is True
+    assert res["source"] == "deterministic_fallback"
+    assert "outside supported range" in res["fallback_reason"]
+    assert res["total_area"] > 0
+
+    # Strict mode: raises ValueError explaining the capacity boundary
+    with pytest.raises(ValueError, match="out-of-distribution"):
+        predict_network_targets(
+            streams,
+            delta_t_min=dtmin,
+            overall_heat_transfer_coefficient=0.1,
+            model=model,
+            guardrail=guardrail,
+            auto_fallback=False,
+        )
+
+
+

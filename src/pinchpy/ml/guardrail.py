@@ -46,7 +46,11 @@ class OODGuardrail:
     dtmin_range: tuple[float, float] = (3.0, 50.0)
     u_range: tuple[float, float] = (0.02, 1.0)
     temp_range: tuple[float, float] = (10.0, 500.0)
+    cp_range: tuple[float, float] = (0.1, 25.0)
+    total_cp_range: tuple[float, float] = (0.2, 60.0)
+    cp_min: float = 0.1
     cp_max: float = 25.0
+    total_cp_min: float = 0.2
     total_cp_max: float = 60.0
     max_hot_capacity: int = 5
     max_cold_capacity: int = 5
@@ -74,16 +78,24 @@ class OODGuardrail:
             self.u_range = (max(0.01, u_min_val * 0.8), u_max_val * 1.25)
 
         if X_arr.shape[1] >= 14:
-            min_c_supply = float(np.min(X_arr[:, 11]))
-            max_h_supply = float(np.max(X_arr[:, 9]))
-            self.temp_range = (max(0.0, min_c_supply * 0.5), max_h_supply * 1.25)
+            min_temp_val = min(float(np.min(X_arr[:, 10])), float(np.min(X_arr[:, 11])))
+            max_temp_val = max(float(np.max(X_arr[:, 9])), float(np.max(X_arr[:, 12])))
+            self.temp_range = (max(0.0, min_temp_val * 0.5), max_temp_val * 1.25)
 
+            min_tot_cp = min(float(np.min(X_arr[:, 7])), float(np.min(X_arr[:, 8])))
             max_tot_cp = max(float(np.max(X_arr[:, 7])), float(np.max(X_arr[:, 8])))
+            self.total_cp_min = max(0.01, min_tot_cp * 0.5)
             self.total_cp_max = max_tot_cp * 1.5
+            self.total_cp_range = (self.total_cp_min, self.total_cp_max)
 
         if X_arr.shape[1] >= 53:
             cp_cols = [16, 20, 24, 28, 32, 36, 40, 44, 48, 52]
-            self.cp_max = float(np.max(X_arr[:, cp_cols])) * 1.5
+            active_cps = X_arr[:, cp_cols][X_arr[:, cp_cols] > 1e-6]
+            min_act_cp = float(np.min(active_cps)) if len(active_cps) > 0 else 0.5
+            max_act_cp = float(np.max(X_arr[:, cp_cols]))
+            self.cp_min = max(0.01, min_act_cp * 0.5)
+            self.cp_max = max_act_cp * 1.5
+            self.cp_range = (self.cp_min, self.cp_max)
 
         if self.detector_type == "mahalanobis":
             self.scaler = StandardScaler()
@@ -162,8 +174,20 @@ class OODGuardrail:
                 f"[1, {self.max_cold_capacity}]."
             )
 
-        # Check stream temperatures in features
-        if x_arr.shape[1] >= 12:
+        # Check stream temperatures in features (both lower and upper bounds)
+        if x_arr.shape[1] >= 13:
+            max_hot_supply = float(x_arr[0, 9])
+            min_hot_target = float(x_arr[0, 10])
+            min_cold_supply = float(x_arr[0, 11])
+            max_cold_target = float(x_arr[0, 12])
+            min_temp_case = min(min_hot_target, min_cold_supply)
+            max_temp_case = max(max_hot_supply, max_cold_target)
+            if min_temp_case < self.temp_range[0] or max_temp_case > self.temp_range[1]:
+                return True, -0.7, (
+                    f"Stream temperatures span [{min_temp_case:.1f}, {max_temp_case:.1f}] °C, "
+                    f"outside operational envelope [{self.temp_range[0]:.1f}, {self.temp_range[1]:.1f}] °C."
+                )
+        elif x_arr.shape[1] >= 12:
             max_hot_supply = float(x_arr[0, 9])
             min_cold_supply = float(x_arr[0, 11])
             if max_hot_supply > self.temp_range[1] or min_cold_supply < self.temp_range[0]:
@@ -172,24 +196,38 @@ class OODGuardrail:
                     f"outside operational envelope [{self.temp_range[0]:.1f}, {self.temp_range[1]:.1f}] °C."
                 )
 
-        # Check stream CP in features
+        # Check total CP in features (both lower and upper bounds)
         if x_arr.shape[1] >= 9:
             tot_h_cp = float(x_arr[0, 7])
             tot_c_cp = float(x_arr[0, 8])
-            if tot_h_cp > self.total_cp_max or tot_c_cp > self.total_cp_max:
+            if tot_h_cp < self.total_cp_range[0] or tot_c_cp < self.total_cp_range[0]:
+                return True, -0.7, (
+                    f"Total CP ({min(tot_h_cp, tot_c_cp):.2f} kW/°C) falls below training bound "
+                    f"({self.total_cp_range[0]:.2f} kW/°C)."
+                )
+            if tot_h_cp > self.total_cp_range[1] or tot_c_cp > self.total_cp_range[1]:
                 return True, -0.7, (
                     f"Total CP ({max(tot_h_cp, tot_c_cp):.2f} kW/°C) exceeds training bound "
-                    f"({self.total_cp_max:.2f} kW/°C)."
+                    f"({self.total_cp_range[1]:.2f} kW/°C)."
                 )
 
+        # Check individual stream CP in features (both lower and upper bounds)
         if x_arr.shape[1] >= 53:
             cp_cols = [16, 20, 24, 28, 32, 36, 40, 44, 48, 52]
-            max_stream_cp = float(np.max(x_arr[0, cp_cols]))
-            if max_stream_cp > self.cp_max:
-                return True, -0.7, (
-                    f"Stream CP ({max_stream_cp:.2f} kW/°C) exceeds individual CP envelope "
-                    f"({self.cp_max:.2f} kW/°C)."
-                )
+            active_cps = [float(x_arr[0, c]) for c in cp_cols if x_arr[0, c] > 1e-6]
+            if active_cps:
+                min_stream_cp = min(active_cps)
+                max_stream_cp = max(active_cps)
+                if min_stream_cp < self.cp_range[0]:
+                    return True, -0.7, (
+                        f"Stream CP ({min_stream_cp:.2f} kW/°C) falls below individual CP envelope "
+                        f"({self.cp_range[0]:.2f} kW/°C)."
+                    )
+                if max_stream_cp > self.cp_range[1]:
+                    return True, -0.7, (
+                        f"Stream CP ({max_stream_cp:.2f} kW/°C) exceeds individual CP envelope "
+                        f"({self.cp_range[1]:.2f} kW/°C)."
+                    )
 
         # Tier 2: Density / Distance detector (runs only if Tier 1 passed)
         if not self.is_fitted:
@@ -233,13 +271,25 @@ class OODGuardrail:
             (n_hot <= 0) | (n_hot > self.max_hot_capacity) |
             (n_cold <= 0) | (n_cold > self.max_cold_capacity)
         )
-        if X_arr.shape[1] >= 12:
+        if X_arr.shape[1] >= 13:
+            min_temp_all = np.minimum(X_arr[:, 10], X_arr[:, 11])
+            max_temp_all = np.maximum(X_arr[:, 9], X_arr[:, 12])
+            t1_mask |= (min_temp_all < self.temp_range[0]) | (max_temp_all > self.temp_range[1])
+        elif X_arr.shape[1] >= 12:
             t1_mask |= (X_arr[:, 9] > self.temp_range[1]) | (X_arr[:, 11] < self.temp_range[0])
+
         if X_arr.shape[1] >= 9:
-            t1_mask |= (X_arr[:, 7] > self.total_cp_max) | (X_arr[:, 8] > self.total_cp_max)
+            t1_mask |= (
+                (X_arr[:, 7] < self.total_cp_range[0]) | (X_arr[:, 8] < self.total_cp_range[0]) |
+                (X_arr[:, 7] > self.total_cp_range[1]) | (X_arr[:, 8] > self.total_cp_range[1])
+            )
+
         if X_arr.shape[1] >= 53:
             cp_cols = [16, 20, 24, 28, 32, 36, 40, 44, 48, 52]
-            t1_mask |= (np.max(X_arr[:, cp_cols], axis=1) > self.cp_max)
+            cp_matrix = X_arr[:, cp_cols]
+            cp_pos = np.where(cp_matrix > 1e-6, cp_matrix, np.inf)
+            min_act_cp = np.min(cp_pos, axis=1)
+            t1_mask |= (min_act_cp < self.cp_range[0]) | (np.max(cp_matrix, axis=1) > self.cp_range[1])
 
         is_ood |= t1_mask
         for idx in np.where(t1_mask)[0]:

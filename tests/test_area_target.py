@@ -164,15 +164,6 @@ def test_integer_and_float_coefficients_are_accepted():
     assert area_target(_simple_streams(), 10, 1)["overall_heat_transfer_coefficient"] == 1.0
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Phase 2/3 shift hot streams up and cold streams down by ΔTmin/2 (standard "
-        "pinch analysis does the opposite), so on this problem the composite curves "
-        "cross and the area is undefined. This should start passing once the shift "
-        "direction is corrected upstream."
-    ),
-    strict=False,
-)
 def test_four_stream_area_target_with_pinch():
     result = area_target(_four_streams(), 10, U)
     assert result["total_area"] > 0

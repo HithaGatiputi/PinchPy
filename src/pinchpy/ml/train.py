@@ -50,6 +50,93 @@ class LogAreaTargetTransformer(BaseEstimator, TransformerMixin):
         return y_out
 
 
+class LogHenTargetTransformer(BaseEstimator, TransformerMixin):
+    """Target transformer applying log1p to area and duties (cols 0, 2, 3, 4) and standardizing targets."""
+
+    def __init__(self, log1p_cols: tuple[int, ...] = (0, 2, 3, 4)) -> None:
+        self.log1p_cols = log1p_cols
+        self.scaler = StandardScaler()
+
+    def fit(self, y: np.ndarray, **fit_params: Any) -> LogHenTargetTransformer:
+        y_arr = np.asarray(y, dtype=float).copy()
+        if y_arr.ndim == 1:
+            y_arr = y_arr.reshape(-1, 1)
+        cols = list(self.log1p_cols) if self.log1p_cols is not None else []
+        for c in cols:
+            y_arr[:, c] = np.log1p(np.maximum(0.0, y_arr[:, c]))
+        self.scaler.fit(y_arr)
+        return self
+
+    def transform(self, y: np.ndarray) -> np.ndarray:
+        y_arr = np.asarray(y, dtype=float).copy()
+        if y_arr.ndim == 1:
+            y_arr = y_arr.reshape(-1, 1)
+        cols = list(self.log1p_cols) if self.log1p_cols is not None else []
+        for c in cols:
+            y_arr[:, c] = np.log1p(np.maximum(0.0, y_arr[:, c]))
+        return self.scaler.transform(y_arr)
+
+    def inverse_transform(self, y: np.ndarray) -> np.ndarray:
+        y_unscaled = self.scaler.inverse_transform(y)
+        y_out = y_unscaled.copy()
+        cols = list(self.log1p_cols) if self.log1p_cols is not None else []
+        for c in cols:
+            clipped_exp = np.clip(y_unscaled[:, c], -50.0, 50.0)
+            y_out[:, c] = np.expm1(clipped_exp)
+        return np.maximum(0.0, y_out)
+
+
+def build_hen_ann(
+    hidden_layer_sizes: tuple[int, ...] = (128, 64, 32),
+    learning_rate_init: float = 1e-3,
+    max_iter: int = 1000,
+    random_state: int = 42,
+    use_log1p: bool = True,
+) -> TransformedTargetRegressor | Pipeline:
+    """Build the Phase 6 HEN surrogate neural network pipeline."""
+    base_pipeline = Pipeline([
+        ("scaler", StandardScaler()),
+        ("ann", MLPRegressor(
+            hidden_layer_sizes=hidden_layer_sizes,
+            activation="relu",
+            solver="adam",
+            learning_rate_init=learning_rate_init,
+            max_iter=max_iter,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=25,
+            random_state=random_state,
+        )),
+    ])
+    if use_log1p:
+        return TransformedTargetRegressor(
+            regressor=base_pipeline,
+            transformer=LogHenTargetTransformer(),
+        )
+    return base_pipeline
+
+
+def train_hen_ann(
+    X: np.ndarray,
+    y: np.ndarray,
+    hidden_layer_sizes: tuple[int, ...] = (128, 64, 32),
+    learning_rate_init: float = 1e-3,
+    max_iter: int = 1000,
+    random_state: int = 42,
+    use_log1p: bool = True,
+) -> TransformedTargetRegressor | Pipeline:
+    """Fit the Phase 6 HEN surrogate on training data and return the trained model."""
+    model = build_hen_ann(
+        hidden_layer_sizes=hidden_layer_sizes,
+        learning_rate_init=learning_rate_init,
+        max_iter=max_iter,
+        random_state=random_state,
+        use_log1p=use_log1p,
+    )
+    model.fit(np.asarray(X, dtype=float), np.asarray(y, dtype=float))
+    return model
+
+
 def build_ann(
     hidden_layer_sizes: tuple[int, ...] = (128, 64, 32),
     learning_rate_init: float = 1e-3,

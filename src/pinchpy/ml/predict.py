@@ -30,6 +30,7 @@ class FastANNPredictor:
     out_mean: np.ndarray | None = None
     out_scale: np.ndarray | None = None
     has_log1p_area: bool = True
+    log1p_cols: list[int] | None = None
 
     @classmethod
     def from_model(cls, model: Any) -> FastANNPredictor | None:
@@ -69,15 +70,23 @@ class FastANNPredictor:
         out_mean = None
         out_scale = None
         has_log1p = False
+        log1p_cols = None
 
         if target_transformer is not None:
             t_scaler = getattr(target_transformer, "scaler", None)
             if t_scaler is not None and hasattr(t_scaler, "mean_") and hasattr(t_scaler, "scale_"):
                 out_mean = np.asarray(t_scaler.mean_, dtype=float)
                 out_scale = np.asarray(t_scaler.scale_, dtype=float)
-            if hasattr(target_transformer, "inverse_transform"):
+            if hasattr(target_transformer, "log1p_cols"):
+                log1p_cols = [int(c) for c in target_transformer.log1p_cols]
+                has_log1p = True
+            elif hasattr(target_transformer, "inverse_transform"):
                 cls_name = target_transformer.__class__.__name__.lower()
-                if "log" in cls_name or "log1p" in cls_name:
+                if "hen" in cls_name:
+                    log1p_cols = [0, 2, 3, 4]
+                    has_log1p = True
+                elif "log" in cls_name or "log1p" in cls_name:
+                    log1p_cols = [0]
                     has_log1p = True
 
         return cls(
@@ -88,6 +97,7 @@ class FastANNPredictor:
             out_mean=out_mean,
             out_scale=out_scale,
             has_log1p_area=has_log1p,
+            log1p_cols=log1p_cols,
         )
 
     def predict_single(self, x: np.ndarray) -> np.ndarray:
@@ -106,7 +116,11 @@ class FastANNPredictor:
         if self.out_scale is not None and self.out_mean is not None:
             out = out * self.out_scale + self.out_mean
 
-        if self.has_log1p_area:
+        if self.log1p_cols is not None:
+            for c in self.log1p_cols:
+                clipped_exp = np.clip(out[c], -50.0, 50.0)
+                out[c] = np.expm1(clipped_exp)
+        elif self.has_log1p_area:
             clipped_exp = np.clip(out[0], -50.0, 50.0)
             out[0] = np.expm1(clipped_exp)
 
@@ -128,7 +142,11 @@ class FastANNPredictor:
         if self.out_scale is not None and self.out_mean is not None:
             Out = Out * self.out_scale + self.out_mean
 
-        if self.has_log1p_area:
+        if self.log1p_cols is not None:
+            for c in self.log1p_cols:
+                clipped_exp = np.clip(Out[:, c], -50.0, 50.0)
+                Out[:, c] = np.expm1(clipped_exp)
+        elif self.has_log1p_area:
             clipped_exp = np.clip(Out[:, 0], -50.0, 50.0)
             Out[:, 0] = np.expm1(clipped_exp)
 
@@ -412,4 +430,188 @@ def predict_batch_network_targets(
             })
 
     return results
+
+
+def tac_from_predictions(
+    total_area: float | np.ndarray,
+    exchanger_count: float | np.ndarray,
+    total_heater_duty: float | np.ndarray,
+    total_cooler_duty: float | np.ndarray,
+    fixed_cost: float = 2000.0,
+    area_cost: float = 800.0,
+    area_exponent: float = 0.8,
+    hot_utility_cost: float = 80.0,
+    cold_utility_cost: float = 15.0,
+) -> float | np.ndarray:
+    """Calculate Total Annual Cost (TAC) algebraically from predicted HEN targets.
+
+    Following Yang et al., Energy 324 (2025) 136011:
+        Capital Cost = N_units * (fixed_cost + area_cost * (total_area / N_units)**area_exponent)
+        Utility Cost = hot_utility_cost * total_heater_duty + cold_utility_cost * total_cooler_duty
+        TAC = Capital Cost + Utility Cost
+
+    Parameters
+    ----------
+    total_area : float or np.ndarray
+        Total heat exchange area in m².
+    exchanger_count : float or np.ndarray
+        Number of heat exchanger units.
+    total_heater_duty : float or np.ndarray
+        Total duty of hot utility heaters in kW.
+    total_cooler_duty : float or np.ndarray
+        Total duty of cold utility coolers in kW.
+    fixed_cost : float, default 2000.0
+        Annualized fixed installation cost per unit ($/yr).
+    area_cost : float, default 800.0
+        Annualized area cost coefficient ($/(yr·(m²)^area_exponent)).
+    area_exponent : float, default 0.8
+        Economy-of-scale area cost exponent (dimensionless).
+    hot_utility_cost : float, default 80.0
+        Annualized cost rate of hot utility ($/(kW·yr)).
+    cold_utility_cost : float, default 15.0
+        Annualized cost rate of cold utility ($/(kW·yr)).
+
+    Returns
+    -------
+    float or np.ndarray
+        Calculated Total Annual Cost (TAC) in $/yr.
+    """
+    is_array = isinstance(total_area, np.ndarray) or isinstance(exchanger_count, np.ndarray)
+    tot_a = np.maximum(0.0, np.asarray(total_area, dtype=float))
+    n_units = np.maximum(0.0, np.asarray(exchanger_count, dtype=float))
+    qh = np.maximum(0.0, np.asarray(total_heater_duty, dtype=float))
+    qc = np.maximum(0.0, np.asarray(total_cooler_duty, dtype=float))
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        avg_area = np.where(n_units > 0, tot_a / n_units, 0.0)
+        capital = np.where(
+            n_units > 0,
+            n_units * (fixed_cost + area_cost * (avg_area ** area_exponent)),
+            0.0,
+        )
+
+    op_cost = hot_utility_cost * qh + cold_utility_cost * qc
+    tac = capital + op_cost
+    return tac if is_array else float(tac)
+
+
+def predict_hen_network_targets(
+    streams: list[Stream],
+    delta_t_min: float = 10.0,
+    overall_heat_transfer_coefficient: float = 0.1,
+    model: Any | None = None,
+    guardrail: OODGuardrail | None = None,
+    auto_fallback: bool = True,
+    search_budget: int = 500,
+) -> dict[str, Any]:
+    """Predict synthesized heat exchanger network targets and TAC with OOD guardrails.
+
+    If input streams are flagged as OOD or if surrogate outputs fail thermodynamic checks,
+    this function automatically falls back to Phase 6 synthesis (design_network)
+    and exact network_tac evaluation.
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary containing:
+        - `total_area`: Total network area (m²)
+        - `exchanger_count`: Exchanger units count
+        - `total_heater_duty`: Heater duty (kW)
+        - `total_cooler_duty`: Cooler duty (kW)
+        - `hot_utility_above_target`: Stray hot utility above pinch target (kW)
+        - `tac`: Total Annual Cost ($/yr) computed from predicted area/count/duties
+        - `source`: 'hen_ann_surrogate' or 'deterministic_fallback'
+        - `is_ood`: Boolean flag
+        - `fallback_reason`: Explanation if fallback was triggered
+    """
+    from ..synthesis.network_design import design_network
+    from ..synthesis.network_evaluation import network_tac
+
+    # Fallback helper
+    def _deterministic_eval(reason: str | None, is_ood_flag: bool = True, score: float = 1.0) -> dict[str, Any]:
+        net = design_network(
+            streams,
+            delta_t_min,
+            overall_heat_transfer_coefficient=overall_heat_transfer_coefficient,
+            search_budget=search_budget,
+        )
+        tac_res = network_tac(net)
+        heaters = [e for e in net.exchangers if getattr(e, "is_utility", False) and (e.hot_stream in ("HU", "hot_utility") or e.name.upper().startswith("HU"))]
+        coolers = [e for e in net.exchangers if getattr(e, "is_utility", False) and (e.cold_stream in ("CU", "cold_utility") or e.name.upper().startswith("CU"))]
+        qh = sum(float(e.duty) for e in heaters)
+        qc = sum(float(e.duty) for e in coolers)
+        u_targets = utility_targets(streams, delta_t_min)
+        qh_min = float(u_targets["minimum_hot_utility"])
+        tot_area = sum(float(e.area) for e in net.exchangers if e.area is not None)
+        return {
+            "total_area": tot_area,
+            "exchanger_count": len(net.exchangers),
+            "total_heater_duty": qh,
+            "total_cooler_duty": qc,
+            "hot_utility_above_target": max(0.0, qh - qh_min),
+            "tac": float(tac_res["total"]),
+            "source": "deterministic_engine" if not is_ood_flag else "deterministic_fallback",
+            "is_ood": is_ood_flag,
+            "fallback_reason": reason,
+            "ood_score": score,
+        }
+
+    if model is None:
+        return _deterministic_eval(None, is_ood_flag=False, score=1.0)
+
+    x = case_features(
+        streams,
+        delta_t_min=delta_t_min,
+        overall_heat_transfer_coefficient=overall_heat_transfer_coefficient,
+    )
+
+    # Step 1: OOD Check
+    if guardrail is not None:
+        is_ood, ood_score, fallback_reason = guardrail.check_input(x)
+        if is_ood and auto_fallback:
+            return _deterministic_eval(fallback_reason, is_ood_flag=True, score=ood_score)
+        elif is_ood and not auto_fallback:
+            raise ValueError(f"Input is out-of-distribution: {fallback_reason}")
+
+    # Step 2: ANN Surrogate Inference
+    fast_predictor = get_fast_ann_predictor(model)
+    if fast_predictor is not None:
+        raw_preds = fast_predictor.predict_single(x)
+    else:
+        raw_preds = model.predict(x.reshape(1, -1))[0]
+
+    preds = [float(p) for p in raw_preds]
+    tot_area = max(0.0, preds[0])
+    ex_count = max(0.0, float(round(preds[1])))
+    tot_qh = max(0.0, preds[2])
+    tot_qc = max(0.0, preds[3])
+    qh_above = max(0.0, preds[4] if len(preds) > 4 else 0.0)
+
+    # Step 3: Physical Consistency Check
+    total_hot = sum(float(s.duty()) for s in streams if s.stream_type == "hot")
+    total_cold = sum(float(s.duty()) for s in streams if s.stream_type == "cold")
+    if guardrail is not None:
+        physics_valid, physics_reason = guardrail.validate_physics([tot_area, tot_qh, tot_qc], total_hot, total_cold)
+        if not physics_valid:
+            if auto_fallback:
+                return _deterministic_eval(f"Physical violation: {physics_reason}", is_ood_flag=True, score=1.0)
+            else:
+                raise ValueError(f"Surrogate output physical violation: {physics_reason}")
+
+    # Compute TAC from predicted area/count/duties (never predict TAC directly)
+    tac_val = tac_from_predictions(tot_area, ex_count, tot_qh, tot_qc)
+
+    return {
+        "total_area": tot_area,
+        "exchanger_count": ex_count,
+        "total_heater_duty": tot_qh,
+        "total_cooler_duty": tot_qc,
+        "hot_utility_above_target": qh_above,
+        "tac": tac_val,
+        "source": "hen_ann_surrogate",
+        "is_ood": False,
+        "fallback_reason": None,
+        "ood_score": 1.0,
+    }
+
 

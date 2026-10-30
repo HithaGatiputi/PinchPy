@@ -7,7 +7,13 @@ import pytest
 
 from pinchpy.analysis.area_target import area_target
 from pinchpy.analysis.pinch_point import utility_targets
-from pinchpy.ml.dataset import generate_case, generate_dataset, split_dataset
+from pinchpy.ml.dataset import (
+    HEN_TARGET_COLUMNS,
+    generate_case,
+    generate_dataset,
+    generate_hen_dataset,
+    split_dataset,
+)
 from pinchpy.ml.evaluate import (
     benchmark_latency,
     compare_models,
@@ -19,15 +25,20 @@ from pinchpy.ml.guardrail import OODGuardrail
 from pinchpy.ml.predict import (
     FastANNPredictor,
     predict_ann_fast,
+    predict_hen_network_targets,
     predict_network_targets,
     predict_targets,
+    tac_from_predictions,
 )
 from pinchpy.ml.train import (
+    LogHenTargetTransformer,
     build_ann,
+    build_hen_ann,
     load_artifacts,
     save_artifacts,
     train_ann,
     train_baselines,
+    train_hen_ann,
     train_mlp,
 )
 from pinchpy.models.stream import Stream
@@ -645,6 +656,70 @@ def test_guardrail_fast_mahalanobis_matches_scaler_transform():
 
         assert is_ood == expected_ood
         assert pytest.approx(expected_score, abs=1e-5) == score
+
+
+def test_generate_hen_dataset_columns():
+    """Verify that generate_hen_dataset creates expected feature and target columns."""
+    df = generate_hen_dataset(n_cases=5, seed=42, search_budget=500)
+    assert len(df) == 5
+
+    expected_cols = feature_names(max_hot=5, max_cold=5) + HEN_TARGET_COLUMNS
+    assert list(df.columns) == expected_cols
+
+    # Verify all 6 target columns exist and contain non-negative finite values
+    for col in HEN_TARGET_COLUMNS:
+        assert col in df.columns
+        assert (df[col] >= 0.0).all()
+        assert np.isfinite(df[col]).all()
+
+
+def test_hen_surrogate_non_negative_finite_predictions(four_streams):
+    """Verify that Phase 6 HEN surrogate predicts non-negative, finite targets and TAC."""
+    df = generate_hen_dataset(n_cases=20, seed=42, search_budget=500)
+    X = df.iloc[:, :-6].to_numpy()
+    y = df.iloc[:, -6:-1].to_numpy()  # 5 prediction targets (area, count, qh, qc, qh_above)
+
+    model = train_hen_ann(X, y, hidden_layer_sizes=(16, 8), max_iter=25, random_state=42)
+
+    # Test pure surrogate prediction (without guardrail fallback)
+    res = predict_hen_network_targets(
+        four_streams,
+        delta_t_min=10.0,
+        overall_heat_transfer_coefficient=0.1,
+        model=model,
+        guardrail=None,
+    )
+
+    assert res["source"] == "hen_ann_surrogate"
+    assert res["total_area"] >= 0.0 and np.isfinite(res["total_area"])
+    assert res["exchanger_count"] >= 0.0 and np.isfinite(res["exchanger_count"])
+    assert res["total_heater_duty"] >= 0.0 and np.isfinite(res["total_heater_duty"])
+    assert res["total_cooler_duty"] >= 0.0 and np.isfinite(res["total_cooler_duty"])
+    assert res["hot_utility_above_target"] >= 0.0 and np.isfinite(res["hot_utility_above_target"])
+    assert res["tac"] >= 0.0 and np.isfinite(res["tac"])
+
+    # Verify that surrogate TAC was computed algebraically from predicted area/count/duties
+    expected_tac = tac_from_predictions(
+        res["total_area"],
+        res["exchanger_count"],
+        res["total_heater_duty"],
+        res["total_cooler_duty"],
+    )
+    assert pytest.approx(expected_tac, rel=1e-5) == res["tac"]
+
+    # Test fallback behavior when guardrail is fitted on nominal data
+    guardrail = OODGuardrail().fit(X)
+    res_fallback = predict_hen_network_targets(
+        four_streams,
+        delta_t_min=10.0,
+        overall_heat_transfer_coefficient=0.1,
+        model=model,
+        guardrail=guardrail,
+    )
+    assert res_fallback["total_area"] >= 0.0 and np.isfinite(res_fallback["total_area"])
+    assert res_fallback["tac"] >= 0.0 and np.isfinite(res_fallback["tac"])
+
+
 
 
 

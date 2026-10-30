@@ -3,8 +3,8 @@
 **PinchPy** is a Python library for Pinch Analysis, thermal process integration, and Heat Exchanger Network (HEN) synthesis.
 
 > [!NOTE]
-> **Current Status: Phases 1–5 and 7–8 complete — Stream model + validation, ΔTmin temperature shifting/intervals, heat cascade / pinch-point / utility-targeting engine, Composite Curve / Grand Composite Curve plotting, composite-curve area targeting, and ANN surrogate modeling with OOD Guardrails.**
-> HEN synthesis (Phase 6) and UI/CLI (Phase 9) are planned future work.
+> **Current Status: Phases 1–8 complete — Stream model + validation (Phase 1), ΔTmin temperature shifting/intervals (Phase 2), heat cascade / pinch-point / utility-targeting engine (Phase 3), Composite Curve / Grand Composite Curve plotting (Phase 4), composite-curve area targeting (Phase 5), pinch-based HEN synthesis with a grid-diagram plot (Phase 6), synthetic dataset generation (Phase 7), and ANN surrogate modeling with fast OOD Guardrails (Phase 8).**
+> The HEN synthesis uses a bounded backtracking matcher (CP-rule stream splitting, current-temperature feasibility, partial-duty capping) that reaches the exact Phase 3 minimum utility targets on simple problems; on harder multi-stream problems it can still land slightly above the targets, since it only searches the maximum feasible duty per match rather than a full continuous optimization (see `synthesis/network_design.py`). It always issues a `RuntimeWarning` when that happens, and still closes the gap with a utility exchanger so no energy is ever lost. UI/CLI (Phase 9) is planned future work.
 
 ---
 
@@ -184,9 +184,33 @@ print(result["total_area"])   # about 44.0 (m²)
 
 ---
 
+## 9. HEN Synthesis & Grid Diagram (Phase 6)
+
+The pinch is used to split the problem into an above-pinch and a below-pinch sub-problem (`synthesis.pinch_split`), each matched independently so heat never crosses the pinch. Within each sub-problem, feasible matches (`synthesis.exchanger_matching`, which checks both the ΔTmin temperature feasibility and the CP inequality rule at the pinch) are picked greedily, largest duty first, until no further match is feasible; any remaining duty becomes a heater (above pinch) or cooler (below pinch).
+
+```python
+from pinchpy.models.stream import Stream
+from pinchpy.synthesis.network_design import design_network
+from pinchpy.synthesis.network_evaluation import evaluate_network
+from pinchpy.visualization.network_plot import plot_network
+
+streams = [Stream("H1", "hot", 180, 80, 2.0), Stream("C1", "cold", 20, 150, 1.5)]
+network = design_network(streams, delta_t_min=10, overall_heat_transfer_coefficient=0.5)
+
+print(evaluate_network(network, streams))
+# {'number_of_exchangers': ..., 'total_recovered_heat': ..., 'total_area': ..., 'minimum_units': ...}
+
+fig, ax = plot_network(streams, network)
+```
+
+- `design_network` returns a `HeatExchangerNetwork` of `HeatExchanger` objects; process matches have `is_utility=False`, heaters/coolers have `is_utility=True` (`hot_stream="HU"` for a heater, `cold_stream="CU"` for a cooler).
+- `overall_heat_transfer_coefficient` is optional; when given, each exchanger also gets `lmtd` and `area`.
+- The matcher is a greedy tick-off heuristic, not a full stream-splitting search, so on harder problems it can leave a stream short of a feasible partner; when that happens the leftover is still closed with a utility exchanger so no energy is lost, but a `RuntimeWarning` is raised because the design then exceeds the Phase 3 minimum utility targets.
+- `plot_network` draws the standard grid diagram: streams as horizontal lines on a shared temperature axis, matches as two circles joined by a line and labelled with duty, utilities as a single labelled circle.
+
 ---
 
-## 9. Machine Learning Surrogate & OOD Guardrail (Phases 7–8)
+## 10. Machine Learning Surrogate & OOD Guardrail (Phases 7–8)
 
 PinchPy incorporates a machine-learning surrogate model (Scikit-Learn `MLPRegressor` pipeline) for rapid simultaneous prediction of:
 - **Primary Target**: Total Minimum Area $A_{\text{target}}$ ($\text{m}^2$)
@@ -195,7 +219,7 @@ PinchPy incorporates a machine-learning surrogate model (Scikit-Learn `MLPRegres
 ### Research Contribution: Out-of-Distribution (OOD) Guardrail
 Surrogate neural networks in process engineering can extrapolate dangerously when queried outside their training regime or produce thermodynamically unphysical outputs. PinchPy solves this with a multi-tier **OOD Guardrail**:
 1. **Domain Bounding**: Validates stream counts, temperature spans, $\Delta T_{min}$, and heat transfer coefficient $U$ against the training envelope.
-2. **Feature Density Anomaly Detection**: Uses a trained `IsolationForest` to assess the likelihood of incoming feature representations.
+2. **Feature Density Anomaly Detection**: Uses a trained density/distance detector on standardized features.
 3. **Physical Consistency Checks**: Validates First Law energy conservation ($Q_C - Q_H = \sum Q_H - \sum Q_C$) and non-negativity ($A > 0, Q_H \ge 0, Q_C \ge 0$).
 4. **Automatic Deterministic Fallback**: If an input is flagged as OOD or physically inconsistent, the system transparently falls back to the exact deterministic Phase 5 engine (`area_target`), guaranteeing safe, trusted results.
 
@@ -237,10 +261,9 @@ print(f"Screened {len(batch_results)} network candidates concurrently.")
 | **Throughput** | ~6,880 / s | ~4,080 / s | ~97 / s | **~12,020 / s** |
 | **Speedup vs Deterministic** | 1.00x | 0.59x | 0.014x | **1.95x** |
 
-
 ---
 
-## 10. How to Run Tests & Benchmarks
+## 11. How to Run Tests & Benchmarks
 
 Install the package in editable mode and run the test suite with `pytest`:
 
@@ -269,14 +292,14 @@ python examples/phase5_area_target_example.py
 
 ---
 
-## 11. Project Phases
+## 12. Project Phases
 
 - ✅ **Phase 1**: Process stream data model + validation
 - ✅ **Phase 2**: $\Delta T_{min}$ temperature shifting and interval formation
 - ✅ **Phase 3**: Heat cascade (Problem Table Algorithm), pinch-point identification & minimum utility targeting ($Q_{H,min}$, $Q_{C,min}$), composite-curve data generation
 - ✅ **Phase 4**: Composite Curve / Grand Composite Curve plotting
 - ✅ **Phase 5**: Heat-exchanger duty/LMTD/area calculations wired into composite curves
-- ⏳ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
+- ✅ **Phase 6**: Heat Exchanger Network (HEN) synthesis and grid diagrams
 - ✅ **Phase 7**: Synthetic dataset generation from the deterministic pinch engine
 - ✅ **Phase 8**: ANN (MLP) surrogate model training, baseline comparisons & OOD guardrail
 - ⏳ **Phase 9**: Integration + UI/CLI

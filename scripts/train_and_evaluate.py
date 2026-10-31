@@ -578,9 +578,13 @@ def main() -> None:
     print("-" * 75)
     print(f"{'TAC ($/yr, algebraic)':<28} | {r2_tac:>10.4f} | {mae_tac:>12.2f} | {mape_tac:>9.2f}%")
     print("-" * 75)
+    area_r2 = hen_test_metrics["total_area"]["r2"]
     print("  * Note on weak spots: discrete matching heuristics in design_network create")
     print("    multimodal step changes in stray duties (yielding negative R² on heater/cooler duties),")
-    print("    yet aggregate total area (R² ~ 0.77) and algebraic TAC (R² ~ 0.60) predict reliably.")
+    print(
+        f"    yet aggregate total area (R² ~ {area_r2:.2f}) and algebraic TAC "
+        f"(R² ~ {r2_tac:.2f}) predict reliably."
+    )
 
     # Timing vs design_network
     print("\n[Phase 6 - 4/4] Timing Benchmark vs design_network (search_budget=500):")
@@ -598,24 +602,31 @@ def main() -> None:
             cs.append(Stream(f"C{k}", "cold", float(row[f"cold_{k}_supply_t"]), float(row[f"cold_{k}_target_t"]), float(row[f"cold_{k}_cp"])))
         hen_cases_pool.append((cs, dtm, u_c))
 
-    single_cs, single_dtm, single_u = hen_cases_pool[0]
-    iters = 50
+    # Timing a single repeated case is misleading: cases vary enormously in
+    # difficulty (a 2-stream case can be ~100x faster than a 10-stream one),
+    # so repeating whichever case happens to be first in the pool can report
+    # a best-case number that looks nothing like typical usage. Instead,
+    # time a representative sample of distinct cases once each and average,
+    # which matches what the batch benchmark below already measures.
+    sample_size = min(50, len(hen_cases_pool))
+    sample_cases = hen_cases_pool[:sample_size]
+
     t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        for _ in range(iters):
-            net = design_network(single_cs, single_dtm, single_u, search_budget=500)
+        for cs, dtm, u_c in sample_cases:
+            net = design_network(cs, dtm, u_c, search_budget=500)
             _ = network_tac(net)
-    t_single_det = (time.perf_counter() - t0) / iters
+    t_single_det = (time.perf_counter() - t0) / sample_size
 
-    single_x = case_features(single_cs, single_dtm, single_u)
+    sample_x = np.array([case_features(cs, dtm, u_c) for cs, dtm, u_c in sample_cases])
     t0 = time.perf_counter()
-    for _ in range(iters):
-        raw_p = fast_hen_pred.predict_single(single_x)
+    for x in sample_x:
+        raw_p = fast_hen_pred.predict_single(x)
         _ = tac_from_predictions(raw_p[0], raw_p[1], raw_p[2], raw_p[3])
-    t_single_ann = (time.perf_counter() - t0) / iters
+    t_single_ann = (time.perf_counter() - t0) / sample_size
 
-    print(f"\nSingle-Case Synthesis Latency:")
+    print(f"\nSingle-Case Synthesis Latency (mean over {sample_size} distinct cases, not one case repeated):")
     print(f"  -> Deterministic design_network + TAC: {t_single_det*1e3:>8.2f} ms ({t_single_det*1e6:>8.1f} µs)")
     print(f"  -> FastANNPredictor + algebraic TAC:   {t_single_ann*1e3:>8.2f} ms ({t_single_ann*1e6:>8.1f} µs)")
 

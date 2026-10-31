@@ -4,7 +4,7 @@
 
 > [!NOTE]
 > **Current Status: Phases 1–8 complete — Stream model + validation (Phase 1), ΔTmin temperature shifting/intervals (Phase 2), heat cascade / pinch-point / utility-targeting engine (Phase 3), Composite Curve / Grand Composite Curve plotting (Phase 4), composite-curve area targeting (Phase 5), pinch-based HEN synthesis with a grid-diagram plot (Phase 6), synthetic dataset generation (Phase 7), and ANN surrogate modeling with fast OOD Guardrails (Phase 8).**
-> The HEN synthesis uses a bounded backtracking matcher (CP-rule stream splitting, current-temperature feasibility, partial-duty capping) that reaches the exact Phase 3 minimum utility targets on simple problems; on harder multi-stream problems it can still land slightly above the targets, since it only searches the maximum feasible duty per match rather than a full continuous optimization (see `synthesis/network_design.py`). It always issues a `RuntimeWarning` when that happens, and still closes the gap with a utility exchanger so no energy is ever lost. UI/CLI (Phase 9) is planned future work.
+> The HEN synthesis uses a bounded backtracking matcher (CP-rule stream splitting, current-temperature feasibility, partial-duty capping, tick-off preference, minimum partial-duty floor, split-depth cap) that reaches the exact Phase 3 minimum utility targets on simple problems and keeps exchanger counts in a sane range on harder ones (worst case cut from 122 to under 40 exchangers on 300 random test problems -- see `synthesis/network_design.py`); it can still land slightly above the Phase 3 targets on harder problems, since it only searches the maximum feasible duty per match rather than a full continuous optimization. It always issues a `RuntimeWarning` when that happens, and still closes the gap with a utility exchanger so no energy is ever lost. The Phase 7/8 ANN surrogate and its reported metrics were regenerated against this fixed matcher. UI/CLI (Phase 9) is planned future work.
 
 ---
 
@@ -234,15 +234,15 @@ $$\text{TAC} = \sum_{i \in \text{exchangers}} \left(C_{\text{fixed}} + C_{\text{
 ### Backtracking Matcher: `search_budget` Parameter & Empirical Trade-Offs
 `design_network` accepts a configurable `search_budget` parameter (default `500`), which bounds the maximum number of recursive states explored during tick-off and stream-splitting matching in `_match_region`.
 
-Benchmarking across **200 randomly generated multi-stream synthesis cases** illustrates the speed-versus-stray-utility trade-off:
+Benchmarking across **200 randomly generated multi-stream synthesis cases** (reproducible via `python scripts/benchmark_search_budget.py`, seed=42) illustrates the speed-versus-stray-utility trade-off, measured after the exchanger-fragmentation fix (tick-off preference, minimum partial-duty floor, split-depth cap):
 
-| Search Budget | Average Stray Utility Duty | Average Run Time / Case | Timeout Rate | Match Quality Impact |
-| :---: | :---: | :---: | :---: | :--- |
-| **2000** | **40.8 kW** | 3.86 ms | 0.0% | Deepest search, lowest stray utility |
-| **500** *(Default)* | **41.2 kW** | **3.41 ms** | **0.0%** | **Optimal balance: 12% faster, only +0.4 kW duty** |
-| **200** | 44.5 kW | **2.92 ms** | 0.0% | Fastest, but stray utility increases by +8.1% |
+| Search Budget | Average Stray Utility Duty | Average Run Time / Case | Cases Above Target |
+| :---: | :---: | :---: | :---: |
+| **2000** | 142.0 kW | 9.82 ms | 105/200 |
+| **500** *(Default)* | **154.7 kW** | **2.91 ms** | **107/200** |
+| **200** | 158.1 kW | **1.67 ms** | 111/200 |
 
-A default budget of `500` ensures fast single-digit millisecond network synthesis while avoiding excessive backtracking on combinatorial branch points.
+Budget `500` is about **3.4x faster** than `2000` for a difference of only 2 more cases out of 200 landing above the Phase 3 utility target -- essentially the same match quality, much faster. (An earlier version of this table, measured before the fragmentation fix and reporting budget `500` as only 12% faster, was wrong; this table replaces it.)
 
 ---
 
@@ -418,38 +418,43 @@ $$\text{TAC}_{\text{pred}} = N_{\text{pred}} \cdot \left(2000 + 800 \cdot \left(
 
 ### Performance on Held-Out Test Partition ($N=150$)
 
+Measured after the exchanger-fragmentation fix to `design_network` (tick-off preference, minimum partial-duty floor, split-depth cap -- see Section 9a); the dataset was regenerated and the surrogate retrained from scratch against the fixed matcher, since training against the old matcher's fragmented labels was training the surrogate to predict noise.
+
 | Target / Label | $R^2$ Score | Mean Absolute Error (MAE) | Mean Absolute Percentage Error (MAPE) |
 | :--- | :---: | :---: | :---: |
-| **Total Area ($A_{\text{net}}$)** | **0.6796** | **129.52 m²** | **32.40%** |
-| **Exchanger Count ($N$)** | **0.4477** | **8.60 units** | **51.92%** |
-| **Total Heater Duty ($Q_H$)** | -0.6605 | 463.13 kW | 300.23% |
-| **Total Cooler Duty ($Q_C$)** | 0.1366 | 380.36 kW | 272.79% |
-| **Hot Utility Above Target** | -0.2409 | 35.19 kW | 351.57% |
-| **TAC ($\$ / \text{yr}$, algebraic)** | **0.5166** | **$74,820.61 / yr** | **29.33%** |
+| **Total Area ($A_{\text{net}}$)** | **0.6342** | **135.43 m²** | **35.78%** |
+| **Exchanger Count ($N$)** | **0.7292** | **2.18 units** | **23.12%** |
+| **Total Heater Duty ($Q_H$)** | -0.4066 | 443.91 kW | 353.61% |
+| **Total Cooler Duty ($Q_C$)** | 0.0643 | 390.60 kW | 369.07% |
+| **Hot Utility Above Target** | -0.0565 | 44.77 kW | 324.71% |
+| **TAC ($\$ / \text{yr}$, algebraic)** | **0.5717** | **$63,209.75 / yr** | **29.19%** |
 
 #### Honest Analysis of Weak Spots & Engineering Insights
-- **Heuristic Combinatorics & Stray Duty Step Changes**: `design_network` uses heuristic backtracking (`search_budget=500`). When streams cannot be fully matched without stream splitting, stray utility exchangers appear intermittently (e.g. 0 kW vs hundreds of kW). These discrete, discontinuous step changes yield negative $R^2$ and high MAPE on individual heater/cooler duties, as a smooth continuous feed-forward MLP cannot easily regress discrete branch choices.
-- **Aggregate Robustness for Area & TAC**: In contrast to individual stream duties, **total network area ($R^2 \approx 0.68$, MAPE ~32%)** and **algebraic TAC ($R^2 \approx 0.52$, MAPE ~29%)** exhibit solid, stable predictive performance. Because capital and utility costs aggregate over the entire network, individual stream match variations smooth out, enabling rapid preliminary economic screening.
+- **Exchanger count prediction improved sharply after the fragmentation fix**: $R^2$ went from 0.4477 to **0.7292** and MAE from 8.60 to **2.18 units** (MAPE 51.92% to 23.12%). The earlier, much worse numbers were an artifact of training the surrogate on labels from a matcher that could fragment a 10-stream design into 122 exchangers -- the surrogate was correctly learning a genuinely noisier target, not failing on a stable one. This is the clearest evidence that the matcher fix (not just the surrogate) was the right thing to fix first.
+- **Heuristic Combinatorics & Stray Duty Step Changes**: `design_network` uses heuristic backtracking (`search_budget=500`). When streams cannot be fully matched without stream splitting, stray utility exchangers appear intermittently (e.g. 0 kW vs hundreds of kW). These discrete, discontinuous step changes yield negative $R^2$ and high MAPE on individual heater/cooler duties, as a smooth continuous feed-forward MLP cannot easily regress discrete branch choices. This is unchanged by the fragmentation fix, since it is a property of the utility-routing decision, not the exchanger count.
+- **Aggregate Robustness for Area & TAC**: Total network area ($R^2 \approx 0.63$, MAPE ~36%) and algebraic TAC ($R^2 \approx 0.57$, MAPE ~29%) remain stable and usable for preliminary economic screening; TAC improved slightly alongside the exchanger-count fix, since TAC's capital term depends directly on exchanger count and per-exchanger area.
 
 ### Synthesis Latency Benchmark: FastANNPredictor vs `design_network`
 
+Single-case latency is measured as a mean over 50 distinct cases (not one case repeated -- see Section 9a/11 note on the earlier misleading single-case measurement):
+
 | Workload | Deterministic Synthesis (`design_network` + TAC) | FastANNPredictor + Algebraic TAC | Speedup Factor |
 | :--- | :---: | :---: | :---: |
-| **Single Case** | 20.3 µs (simple) to ~3.4 ms (multi-stream) | **48.3 µs** | Up to **~70x** on complex cases |
-| **Batch 10** | 28.90 ms (2.89 ms/case) | **0.43 ms (43.5 µs/case)** | **66.5x** |
-| **Batch 100** | 326.33 ms (3.26 ms/case) | **8.60 ms (86.0 µs/case)** | **38.0x** |
-| **Batch 1000** | 2,996.65 ms (3.00 ms/case) | **13.17 ms (13.2 µs/case)** | **227.5x** |
+| **Single Case** (mean of 50) | 2.05 ms | **48.6 µs** | **~42x** |
+| **Batch 10** | 16.87 ms (1.69 ms/case) | **0.39 ms (38.7 µs/case)** | **43.6x** |
+| **Batch 100** | 189.13 ms (1.89 ms/case) | **1.96 ms (19.6 µs/case)** | **96.3x** |
+| **Batch 1000** | 2,182.70 ms (2.18 ms/case) | **16.47 ms (16.5 µs/case)** | **132.5x** |
 
 ### Literature Benchmarking with CP Scaling (Phase 6 Surrogate)
 For HEN synthesis with CP scaling ($k = 15 / \sum CP_i$), area and duties scale linearly by $1/k$, whereas **exchanger count ($N$) is topological and is not multiplied by $1/k$**. Across all 35 literature benchmarks, 5 instances pass the guardrail:
-- **Mean TAC Error**: **23.0%**
-- **Mean Area Error**: **37.3%**
+- **Mean TAC Error**: **21.1%**
+- **Mean Area Error**: **28.1%**
 - **Detailed In-Distribution Accuracy**:
-  - `4sp1`: Exact TAC \$479,987 vs Pred \$611,874 (27.5% err), Exact Area 1698.28 m² vs Pred 1524.88 m² (10.2% err)
-  - `6sp-gg1`: Exact TAC \$819,550 vs Pred \$1,058,697 (29.2% err), Exact Area 2126.75 m² vs Pred 3299.95 m² (55.2% err)
-  - `6sp1`: Exact TAC \$1,423,591 vs Pred \$1,328,612 (6.7% err), Exact Area 5712.18 m² vs Pred 4321.79 m² (24.3% err)
-  - `7sp-torw1`: Exact TAC \$739,898 vs Pred \$374,880 (49.3% err), Exact Area 1871.86 m² vs Pred 711.97 m² (62.0% err)
-  - `8sp1`: Exact TAC \$1,809,284 vs Pred \$1,854,191 (2.5% err), Exact Area 7340.10 m² vs Pred 4794.32 m² (34.7% err)
+  - `4sp1`: Exact TAC \$429,609 vs Pred \$377,436 (12.1% err), Exact Area 1542.89 m² vs Pred 1093.54 m² (29.1% err)
+  - `6sp-gg1`: Exact TAC \$640,973 vs Pred \$880,602 (37.4% err), Exact Area 2232.00 m² vs Pred 2888.01 m² (29.4% err)
+  - `6sp1`: Exact TAC \$966,368 vs Pred \$1,008,466 (4.4% err), Exact Area 3795.99 m² vs Pred 3565.48 m² (6.1% err)
+  - `7sp-torw1`: Exact TAC \$712,841 vs Pred \$357,751 (49.8% err), Exact Area 1946.03 m² vs Pred 843.75 m² (56.6% err)
+  - `8sp1`: Exact TAC \$1,336,990 vs Pred \$1,312,793 (1.8% err), Exact Area 4914.13 m² vs Pred 3965.15 m² (19.3% err)
 
 ---
 

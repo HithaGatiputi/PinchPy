@@ -1,3 +1,6 @@
+import random
+import warnings
+
 import pytest
 
 from pinchpy.models.stream import Stream
@@ -172,3 +175,72 @@ def test_search_budget_consistency_across_existing_cases():
         hu_2000 = _heater_total(net_2000)
         assert hu_500 == pytest.approx(hu_2000)
 
+
+
+def _random_case(rng, n_hot, n_cold):
+    streams = []
+    for i in range(n_hot):
+        supply = rng.uniform(130, 420)
+        target = rng.uniform(35, supply - 15)
+        cp = rng.uniform(0.5, 7.5)
+        streams.append(Stream(f"H{i + 1}", "hot", round(supply, 1), round(target, 1), round(cp, 2)))
+    for j in range(n_cold):
+        supply = rng.uniform(20, 300)
+        target = rng.uniform(supply + 15, supply + 300)
+        cp = rng.uniform(0.5, 7.5)
+        streams.append(Stream(f"C{j + 1}", "cold", round(supply, 1), round(target, 1), round(cp, 2)))
+    return streams
+
+
+def test_design_network_exchanger_count_stays_bounded_across_random_cases():
+    # Regression test for excessive fragmentation: a review of an earlier
+    # version of this matcher found 147/300 random 2-10 stream problems used
+    # more than 2x the theoretical minimum number of units, with a worst
+    # case of 122 exchangers for 10 streams (~11 should suffice). Tick-off
+    # preference, a minimum partial-duty floor and a split-depth cap fixed
+    # this; this test keeps it fixed.
+    rng = random.Random(42)
+    over_2x = 0
+    max_exchangers = 0
+    total = 300
+    for _ in range(total):
+        streams = _random_case(rng, rng.randint(2, 5), rng.randint(2, 5))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+        summary = evaluate_network(network, streams)
+        max_exchangers = max(max_exchangers, summary["number_of_exchangers"])
+        if summary["minimum_units"] > 0 and summary["number_of_exchangers"] > 2 * summary["minimum_units"]:
+            over_2x += 1
+
+    assert over_2x < 60  # was 147/300 before the fix
+    assert max_exchangers < 40  # was 122 before the fix
+
+
+def test_design_network_no_exchanger_below_minimum_duty_floor():
+    streams = [
+        Stream("H1", "hot", 163.4, 28.7, 3.29),
+        Stream("H2", "hot", 125.5, 60.8, 2.35),
+        Stream("C1", "cold", 55.6, 184.5, 1.28),
+        Stream("C2", "cold", 52.8, 141.3, 2.3),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    process = [e for e in network.exchangers if not e.is_utility]
+    smallest_stream_duty = min(s.duty() for s in streams)
+    for e in process:
+        # Every process match is either a tick-off (consumes a stream fully)
+        # or at least a non-trivial fraction of it -- never a near-zero sliver.
+        assert e.duty > 0.01 * smallest_stream_duty
+
+
+def test_design_network_limits_split_depth():
+    streams = [
+        Stream("H1", "hot", 163.4, 28.7, 3.29),
+        Stream("H2", "hot", 125.5, 60.8, 2.35),
+        Stream("C1", "cold", 55.6, 184.5, 1.28),
+        Stream("C2", "cold", 52.8, 141.3, 2.3),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    split_markers = [e.hot_stream.count("~") for e in network.exchangers]
+    split_markers += [e.cold_stream.count("~") for e in network.exchangers]
+    assert max(split_markers) <= 1

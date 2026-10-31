@@ -149,3 +149,26 @@ def test_evaluate_network_reports_counts_and_duty():
     assert summary["total_recovered_heat"] == pytest.approx(_process_total(network))
     assert "total_area" in summary
     assert summary["minimum_units"] >= 1
+
+
+def test_search_budget_consistency_across_existing_cases():
+    """Verify search_budget=500 and search_budget=2000 yield the same hot utility on existing test cases."""
+    case_simple = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    case_four = [
+        Stream("H1", "hot", 163.4, 28.7, 3.29),
+        Stream("H2", "hot", 125.5, 60.8, 2.35),
+        Stream("C1", "cold", 55.6, 184.5, 1.28),
+        Stream("C2", "cold", 52.8, 141.3, 2.3),
+    ]
+
+    for case in [case_simple, case_four]:
+        net_500 = design_network(case, delta_t_min=10.0, overall_heat_transfer_coefficient=0.5, search_budget=500)
+        net_2000 = design_network(case, delta_t_min=10.0, overall_heat_transfer_coefficient=0.5, search_budget=2000)
+
+        hu_500 = _heater_total(net_500)
+        hu_2000 = _heater_total(net_2000)
+        assert hu_500 == pytest.approx(hu_2000)
+

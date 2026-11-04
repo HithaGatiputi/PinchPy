@@ -149,3 +149,101 @@ def test_evaluate_network_reports_counts_and_duty():
     assert summary["total_recovered_heat"] == pytest.approx(_process_total(network))
     assert "total_area" in summary
     assert summary["minimum_units"] >= 1
+
+
+def test_evaluate_network_efficiency_and_targets():
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    summary = evaluate_network(network, streams, delta_t_min=10)
+
+    assert "target_hot_utility" in summary
+    assert "target_cold_utility" in summary
+    assert "target_heat_recovery" in summary
+    assert "energy_recovery_efficiency" in summary
+    assert summary["energy_recovery_efficiency"] == pytest.approx(1.0)
+
+
+def test_validate_network_pinch_rules_on_simple_case():
+    from pinchpy.synthesis.network_evaluation import validate_network_pinch_rules
+
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    report = validate_network_pinch_rules(network, streams, delta_t_min=10)
+
+    assert report["is_valid"] is True
+    assert report["energy_balance_conserved"] is True
+    assert report["stream_balances_satisfied"] is True
+    assert report["delta_t_min_respected"] is True
+    assert report["no_cross_pinch_transfer"] is True
+    assert len(report["delta_t_violations"]) == 0
+    assert len(report["cross_pinch_matches"]) == 0
+
+
+def test_validate_network_pinch_rules_detects_violations():
+    from pinchpy.models.exchanger import HeatExchanger
+    from pinchpy.models.network import HeatExchangerNetwork
+    from pinchpy.synthesis.network_evaluation import validate_network_pinch_rules
+    from pinchpy.analysis.benchmarks import get_benchmark
+
+    bench = get_benchmark("kemp_2007_4stream")
+    streams = bench["streams"]
+    # Kemp 4-stream at dTmin=10 has pinch at Th=90, Tc=80.
+    # Deliberately violate pinch rule: cross-pinch match (hot_in=120 > 90, cold_in=50 < 80)
+    # and delta_t violation (hot_out=80, cold_in=75 => gap 5 < 10)
+    bad_exchanger = HeatExchanger(
+        name="BadCrossPinchMatch",
+        hot_stream="H1",
+        cold_stream="C1",
+        duty=50.0,
+        delta_t_min=10,
+        hot_inlet=120.0,
+        hot_outlet=80.0,
+        cold_inlet=50.0,
+        cold_outlet=100.0,
+        is_utility=False,
+    )
+    bad_net = HeatExchangerNetwork(exchangers=[bad_exchanger])
+    report = validate_network_pinch_rules(bad_net, streams, delta_t_min=10)
+
+    assert report["is_valid"] is False
+    assert report["no_cross_pinch_transfer"] is False
+    assert "BadCrossPinchMatch" in report["cross_pinch_matches"]
+
+
+def test_utility_exchangers_record_process_temperatures():
+    streams = [
+        Stream("H1", "hot", 180, 80, 2.0),
+        Stream("C1", "cold", 20, 150, 1.5),
+    ]
+    network = design_network(streams, 10, overall_heat_transfer_coefficient=0.5)
+    utility_exchangers = [e for e in network.exchangers if e.is_utility]
+    assert len(utility_exchangers) > 0
+    for e in utility_exchangers:
+        if e.hot_stream in ("HU", "hot_utility", "steam"):
+            assert e.cold_inlet is not None
+            assert e.cold_outlet is not None
+        elif e.cold_stream in ("CU", "cold_utility", "water"):
+            assert e.hot_inlet is not None
+            assert e.hot_outlet is not None
+
+
+def test_network_design_kemp_benchmark_validity():
+    from pinchpy.analysis.benchmarks import get_benchmark
+    from pinchpy.synthesis.network_evaluation import validate_network_pinch_rules
+
+    bench = get_benchmark("kemp_2007_4stream")
+    streams = bench["streams"]
+    network = design_network(streams, delta_t_min=10.0, overall_heat_transfer_coefficient=0.5)
+    report = validate_network_pinch_rules(network, streams, delta_t_min=10.0)
+
+    assert report["energy_balance_conserved"] is True
+    assert report["stream_balances_satisfied"] is True
+    assert report["delta_t_min_respected"] is True
+    assert report["no_cross_pinch_transfer"] is True
+    assert report["is_valid"] is True

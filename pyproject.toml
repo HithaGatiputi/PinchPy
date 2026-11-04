@@ -15,5 +15,8 @@ dependencies = [
     "xgboost",
 ]
 
+[project.scripts]
+pinchpy = "pinchpy.cli:main"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]

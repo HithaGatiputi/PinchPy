@@ -14,21 +14,25 @@ _TOLERANCE = 1e-9
 
 
 def pinch_temperature(intervals, cascade):
-    """Return the shifted temperature of the first (coldest-indexed) pinch."""
+    """Return the shifted temperature of the first pinch point."""
     points = pinch_temperatures(intervals, cascade)
-    return points[0]
+    return points[0] if points else None
 
 
 def pinch_temperatures(intervals, cascade):
     """Return every shifted temperature at which the cascade reaches zero."""
+    if not intervals or not cascade:
+        return []
     minimum = min(cascade)
     points = []
     for index, value in enumerate(cascade):
         if abs(value - minimum) <= _TOLERANCE:
-            if index >= len(intervals):
-                points.append(intervals[-1][1])
+            if index < len(intervals):
+                pt = intervals[index][0]
             else:
-                points.append(intervals[index][0])
+                pt = intervals[-1][1]
+            if pt not in points:
+                points.append(pt)
     return points
 
 
@@ -45,12 +49,18 @@ def utility_targets(streams, delta_t_min):
             "pinch_hot_temperature": None,
             "pinch_cold_temperature": None,
             "pinch_shifted_temperatures": [],
+            "pinch_hot_temperatures": [],
+            "pinch_cold_temperatures": [],
+            "heat_recovery": 0.0,
             "is_threshold_problem": False,
         }
 
     pinch_points = pinch_temperatures(intervals, cascade)
     pinch_shifted = pinch_points[0]
     is_threshold_problem = hot_utility <= _TOLERANCE or cold_utility <= _TOLERANCE
+
+    total_hot_duty = sum(s.duty() for s in streams if s.type == "hot")
+    heat_recovery = max(0.0, total_hot_duty - cold_utility)
 
     return {
         "minimum_hot_utility": hot_utility,
@@ -59,5 +69,8 @@ def utility_targets(streams, delta_t_min):
         "pinch_hot_temperature": pinch_shifted + delta_t_min / 2,
         "pinch_cold_temperature": pinch_shifted - delta_t_min / 2,
         "pinch_shifted_temperatures": pinch_points,
+        "pinch_hot_temperatures": [t + delta_t_min / 2 for t in pinch_points],
+        "pinch_cold_temperatures": [t - delta_t_min / 2 for t in pinch_points],
+        "heat_recovery": heat_recovery,
         "is_threshold_problem": is_threshold_problem,
     }

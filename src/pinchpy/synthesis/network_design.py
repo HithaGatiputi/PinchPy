@@ -285,9 +285,17 @@ def _utility_exchangers(states, delta_t_min, U, utility_name, utility_type, coun
         # driving force is approximated by the process stream's own
         # remaining temperature change, floored at delta_t_min.
         if utility_type == "cooler":
-            mean_difference = max(state.current_temperature - state.stream.target_temperature, delta_t_min)
+            hot_in = state.current_temperature
+            hot_out = state.stream.target_temperature
+            cold_in = None
+            cold_out = None
+            mean_difference = max(hot_in - hot_out, delta_t_min)
         else:
-            mean_difference = max(state.stream.target_temperature - state.current_temperature, delta_t_min)
+            hot_in = None
+            hot_out = None
+            cold_in = state.current_temperature
+            cold_out = state.stream.target_temperature
+            mean_difference = max(cold_out - cold_in, delta_t_min)
 
         area = required_area(duty, U, mean_difference) if U else None
         counter[0] += 1
@@ -300,6 +308,10 @@ def _utility_exchangers(states, delta_t_min, U, utility_name, utility_type, coun
             overall_heat_transfer_coefficient=U,
             lmtd=mean_difference,
             area=area,
+            hot_inlet=hot_in,
+            hot_outlet=hot_out,
+            cold_inlet=cold_in,
+            cold_outlet=cold_out,
             is_utility=True,
         ))
         state.remaining = 0.0
